@@ -7,9 +7,9 @@ import random
 import pygame
 from pyglm import glm
 
-from src.entities import Bullet, Player, Portal, Shell
-from src.sound import SoundPlayer
-from src.util import get_collisions, intersect, point_dist_to_line, remap
+from portal_shooter.entities import Bullet, Player, Portal, Shell
+from portal_shooter.sound import SoundPlayer
+from portal_shooter.util import get_collisions, intersect, point_dist_to_line, remap
 
 pygame.init()
 

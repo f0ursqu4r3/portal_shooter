@@ -4,7 +4,7 @@
       "name": "Python: Module",
       "type": "python",
       "request": "launch",
-      "module": "src"
+      "module": "portal_shooter"
     }
   ]
 }
