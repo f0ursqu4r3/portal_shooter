@@ -17,11 +17,15 @@ pygame.init()
 class Game:
     def __init__(self) -> None:
         self.window_size: glm.vec2 = glm.vec2(720)
-        self.window: pygame.Surface = pygame.display.set_mode(self.window_size, pygame.DOUBLEBUF)
+        self.window: pygame.Surface = pygame.display.set_mode(
+            self.window_size, pygame.DOUBLEBUF
+        )
         pygame.display.set_caption("playground")
 
         self.screen_scale: float = 3
-        self.screen: pygame.Surface = pygame.Surface(self.window_size / self.screen_scale)
+        self.screen: pygame.Surface = pygame.Surface(
+            self.window_size / self.screen_scale
+        )
         self.screen_size: glm.vec2 = glm.vec2(self.screen.get_size())
         self.running: bool = True
 
@@ -34,6 +38,7 @@ class Game:
         self.player_walk_timer: float = 0
 
         self.entities: list[Bullet | Shell] = []
+        self.bullets: list[Bullet] = []
 
         self.portals: list[Portal | None] = [None, None]
 
@@ -42,6 +47,10 @@ class Game:
         self.fire_rate: float = 1 / 40
 
         self.screen_shake: glm.vec2 = glm.vec2()
+        self.layer: pygame.Surface = pygame.Surface(
+            self.screen.get_size(), pygame.SRCALPHA
+        )
+        self._layer_size: tuple[int, int] = self.screen.get_size()
 
     def run(self) -> None:
         with cProfile.Profile() as p:
@@ -55,7 +64,7 @@ class Game:
         stats.dump_stats("profile.prof")
 
     def process_events(self) -> None:
-        mpos = glm.vec2(pygame.mouse.get_pos()) / self.screen_scale
+        self.mpos = glm.vec2(pygame.mouse.get_pos()) / self.screen_scale
 
         self.process_pygame_events()
 
@@ -84,8 +93,10 @@ class Game:
             self.player_walk_timer = 0
 
         if pygame.mouse.get_pressed()[0] and not self.shot_timer:
-            fire_vec = glm.normalize(mpos - self.player.pos)
-            self.entities.append(Bullet(self.player.pos + fire_vec * 15, fire_vec))
+            fire_vec = glm.normalize(self.mpos - self.player.pos)
+            bullet = Bullet(self.player.pos + fire_vec * 15, fire_vec)
+            self.entities.append(bullet)
+            self.bullets.append(bullet)
 
             eject_vec = glm.vec2(-fire_vec.y, fire_vec.x)
             self.entities.append(
@@ -102,7 +113,6 @@ class Game:
             self.time_scale = 0.2
 
     def process_pygame_events(self) -> None:
-        mpos = glm.vec2(pygame.mouse.get_pos()) / self.screen_scale
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (
                 event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
@@ -111,11 +121,11 @@ class Game:
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_q:
                     self.portals[0] = Portal(
-                        mpos, (mpos - self.player.pos), (255, 127, 0)
+                        self.mpos, (self.mpos - self.player.pos), (255, 127, 0)
                     )
                 elif event.key == pygame.K_e:
                     self.portals[1] = Portal(
-                        mpos, (mpos - self.player.pos), (41, 174, 255)
+                        self.mpos, (self.mpos - self.player.pos), (41, 174, 255)
                     )
                 elif event.key == pygame.K_z:
                     self.portals[0] = None
@@ -129,6 +139,8 @@ class Game:
                 self.screen_scale = min(6, max(self.screen_scale + event.y * 0.05, 1))
                 self.screen = pygame.Surface(self.window_size / self.screen_scale)
                 self.screen_size = glm.vec2(self.screen.get_size())
+                self.layer = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+                self._layer_size = self.screen.get_size()
 
     def update(self) -> None:
         tdt = self.clock.tick() * 0.001
@@ -140,8 +152,6 @@ class Game:
 
         dt = tdt * self.time_scale
         self.shot_timer = max(0, self.shot_timer - dt)
-
-        self.mpos = glm.vec2(pygame.mouse.get_pos()) / self.screen_scale
 
         self.player_walk_timer += dt
 
@@ -158,13 +168,13 @@ class Game:
             self.player.pos.y = self.screen_size.y
 
         self.do_portal(self.player)
-        self.player.update(dt)
 
-        for entity in self.entities[:]:
+        dead: set[Bullet | Shell] = set()
+        for entity in self.entities:
             entity.update(dt)
 
             if entity.life < 0:
-                self.entities.remove(entity)
+                dead.add(entity)
                 continue
 
             if not (0 < entity.pos.x < self.screen_size.x):
@@ -182,13 +192,11 @@ class Game:
 
             self.do_portal(entity)
 
-        for collision in get_collisions(
-            self.player, [e for e in self.entities if isinstance(e, Bullet)]
-        ):
+        for collision in get_collisions(self.player, self.bullets):
             self.player.health -= 10
-            self.entities.remove(collision)
+            dead.add(collision)
             if self.player.health > 0:
-                vel = glm.vec2(-entity.vel.y, entity.vel.x)
+                vel = glm.vec2(-collision.vel.y, collision.vel.x)
                 self.player.emitter.vel = vel
                 self.player.emitter.burst()
                 self.sound_payer.play("Hurt1")
@@ -196,6 +204,11 @@ class Game:
                 self.player.emitter.vel = None
                 self.player.emitter.burst(50)
                 self.time_scale = 0.05
+
+        if dead:
+            self.entities = [e for e in self.entities if e not in dead]
+            self.bullets = [b for b in self.bullets if b not in dead]
+
         for portal in self.portals:
             if portal:
                 portal.update(dt)
@@ -205,13 +218,15 @@ class Game:
         if not (all(self.portals) and entity.vel):
             return
         for i, portal in enumerate(self.portals):
+            assert portal is not None
             intersects = intersect(
                 entity.pos, entity.pos + glm.normalize(entity.vel) * 10, *portal.line
             )
             dist = point_dist_to_line(entity.pos, portal.line)
             if intersects and dist <= 3:
                 dest = self.portals[(i + 1) % 2]
-                entity.pos = dest.exit
+                assert dest is not None
+                entity.pos = glm.vec2(dest.exit)
                 entity.vel = glm.normalize(entity.vel + portal.normal + dest.normal)
                 portal.burst()
                 dest.burst()
@@ -220,14 +235,17 @@ class Game:
 
     def draw(self) -> None:
         self.screen.fill((60, 50, 60))
-        layer = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        self.layer.fill((0, 0, 0, 0))
 
-        [entity.draw(layer) for entity in self.entities]
+        for entity in self.entities:
+            entity.draw(self.layer)
 
-        self.player.draw(layer, self.mpos)
+        self.player.draw(self.layer, self.mpos)
 
-        [portal.draw(layer) for portal in self.portals if portal]
+        for portal in self.portals:
+            if portal:
+                portal.draw(self.layer)
 
-        self.screen.blit(layer, self.screen_shake)
+        self.screen.blit(self.layer, self.screen_shake)
         pygame.transform.scale(self.screen, self.window_size, self.window)
         pygame.display.flip()

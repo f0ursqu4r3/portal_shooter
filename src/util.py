@@ -5,8 +5,12 @@ from typing import Any
 from pyglm import glm
 
 
+def cross2d(a: glm.vec2, b: glm.vec2) -> float:
+    return a.x * b.y - a.y * b.x
+
+
 def direction(p1: glm.vec2, p2: glm.vec2, p3: glm.vec2) -> float:
-    return glm.cross(p3 - p1, p2 - p1)
+    return cross2d(p3 - p1, p2 - p1)
 
 
 def intersect(p1: glm.vec2, p2: glm.vec2, p3: glm.vec2, p4: glm.vec2) -> bool:
@@ -38,7 +42,14 @@ def get_collisions(entity: Any, others: list[Any]) -> list[Any]:
     return [o for o in others if hasattr(o, "rect") and o.rect.colliderect(entity.rect)]
 
 
-def remap(val: float, min_in: float, max_in: float, min_out: float, max_out: float, clamp: bool = True) -> float:
+def remap(
+    val: float,
+    min_in: float,
+    max_in: float,
+    min_out: float,
+    max_out: float,
+    clamp: bool = True,
+) -> float:
     if clamp:
         return min(
             max(

@@ -12,6 +12,10 @@ dependencies = [
 [dependency-groups]
 dev = [
     "autopep8",
+    "mypy>=1.19.1",
     "pylint",
+    "ruff>=0.15.4",
     "snakeviz",
+    "ty>=0.0.19",
+    "types-tqdm>=4.67.3.20260205",
 ]

@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pygame
-from pyglm import glm
 from tqdm import tqdm
 
 
@@ -20,8 +19,7 @@ class SoundPlayer:
         self.sounds: list[pygame.mixer.Sound] = []
 
     def play(self, sound_name: str, volume: float = 1) -> None:
-        vol = glm.vec2(volume)
         sound = self.cache[sound_name]
         channel = sound.play()
         if channel:
-            channel.set_volume(vol.x, vol.y)
+            channel.set_volume(volume, volume)

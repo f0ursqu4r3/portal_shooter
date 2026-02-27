@@ -19,9 +19,8 @@ class Player:
         self.health: int = 100
 
         self.emitter: ParticleEmitter = ParticleEmitter(
-            self.pos,
-            glm.vec2(),
-            self.vel,
+            pos=self.pos,
+            vel=glm.vec2(),
             spawn_rate=0,
             shape=ParticleEmitter.Point(30),
             particle_class=FadeOutParticle,
@@ -51,7 +50,25 @@ class Player:
 
 
 class Bullet:
-    __slots__ = ["pos", "vel", "speed", "_speed", "_surf", "life"]
+    __slots__ = [
+        "pos",
+        "vel",
+        "speed",
+        "_speed",
+        "life",
+        "_cached_surf",
+        "_cached_angle",
+        "_cached_scale",
+    ]
+
+    _base_surf: pygame.Surface | None = None
+
+    @classmethod
+    def _get_base_surf(cls) -> pygame.Surface:
+        if cls._base_surf is None:
+            cls._base_surf = pygame.Surface((4, 2))
+            pygame.draw.rect(cls._base_surf, (100, 100, 100), (0, 0, 4, 2))
+        return cls._base_surf
 
     def __init__(self, pos: glm.vec2, vel: glm.vec2) -> None:
         self.pos: glm.vec2 = glm.vec2(pos)
@@ -59,33 +76,55 @@ class Bullet:
         self.speed: int = 100
         self._speed: int = 100
         self.life: float = 5
-        surf = pygame.Surface((4, 2))
-        pygame.draw.rect(surf, (100, 100, 100), (0, 0, 4, 2))
-        self._surf: pygame.Surface = surf
+        self._cached_angle: float = -1.0
+        self._cached_scale: float = -1.0
+        self._cached_surf: pygame.Surface = self._get_base_surf()
 
     @property
     def rect(self) -> pygame.Rect:
         return pygame.Rect(self.pos - glm.vec2(1), (2, 2))
 
-    @property
-    def surf(self) -> pygame.Surface:
-        if not self.vel:
-            return self._surf
-        vel = glm.normalize(self.vel)
-        degrees = math.degrees(math.atan2(vel.y, vel.x))
-        angle = (360 + degrees) % 360
-        return pygame.transform.rotozoom(self._surf, -angle, self.life / 5)
-
     def update(self, dt: float) -> None:
         self.pos += self.vel * self.speed * dt
         self.life -= dt
+        if self.vel:
+            vel = glm.normalize(self.vel)
+            angle = round((360 + math.degrees(math.atan2(vel.y, vel.x))) % 360)
+            scale = round(self.life / 5, 1)
+            if angle != self._cached_angle or scale != self._cached_scale:
+                self._cached_angle = angle
+                self._cached_scale = scale
+                self._cached_surf = pygame.transform.rotozoom(
+                    self._get_base_surf(), -angle, max(scale, 0.1)
+                )
 
     def draw(self, surface: pygame.Surface) -> None:
-        surface.blit(self.surf, self.pos - glm.vec2(self.surf.get_size()) / 2)
+        surf = self._cached_surf
+        surface.blit(surf, self.pos - glm.vec2(surf.get_size()) / 2)
 
 
 class Shell:
-    __slots__ = ["pos", "vel", "speed", "_speed", "_surf", "life", "rot_speed"]
+    __slots__ = [
+        "pos",
+        "vel",
+        "speed",
+        "_speed",
+        "life",
+        "rot_speed",
+        "_cached_surf",
+        "_cached_angle",
+        "_cached_scale",
+    ]
+
+    _base_surf: pygame.Surface | None = None
+
+    @classmethod
+    def _get_base_surf(cls) -> pygame.Surface:
+        if cls._base_surf is None:
+            cls._base_surf = pygame.Surface((4, 2))
+            pygame.draw.rect(cls._base_surf, (200, 200, 0), (0, 0, 1, 2))
+            pygame.draw.rect(cls._base_surf, (200, 0, 0), (1, 0, 3, 2))
+        return cls._base_surf
 
     def __init__(self, pos: glm.vec2, vel: glm.vec2) -> None:
         self.pos: glm.vec2 = glm.vec2(pos)
@@ -94,33 +133,41 @@ class Shell:
         self._speed: int = int(self.speed)
         self.life: float = 5
         self.rot_speed: float = random.random()
-        surf = pygame.Surface((4, 2))
-        pygame.draw.rect(surf, (200, 200, 0), (0, 0, 1, 2))
-        pygame.draw.rect(surf, (200, 0, 0), (1, 0, 3, 2))
-        self._surf: pygame.Surface = surf
+        self._cached_angle: float = -1.0
+        self._cached_scale: float = -1.0
+        self._cached_surf: pygame.Surface = self._get_base_surf()
 
     @property
     def rect(self) -> pygame.Rect:
         return pygame.Rect(self.pos - glm.vec2(1), (2, 2))
 
-    @property
-    def surf(self) -> pygame.Surface:
-        if not self.vel:
-            return self._surf
-        vel = glm.normalize(self.vel)
-        degrees = math.degrees(math.atan2(vel.y, vel.x))
-        angle = (
-            360 + degrees - 90 - (360 * ((self.speed / self._speed) * self.rot_speed))
-        ) % 360
-        return pygame.transform.rotozoom(self._surf, -angle, self.life / 5)
-
     def update(self, dt: float) -> None:
         self.pos += self.vel * self.speed * dt
         self.life -= dt
         self.speed *= 1 - dt * 1.8
+        if self.vel:
+            vel = glm.normalize(self.vel)
+            degrees = math.degrees(math.atan2(vel.y, vel.x))
+            angle = round(
+                (
+                    360
+                    + degrees
+                    - 90
+                    - (360 * ((self.speed / self._speed) * self.rot_speed))
+                )
+                % 360
+            )
+            scale = round(self.life / 5, 1)
+            if angle != self._cached_angle or scale != self._cached_scale:
+                self._cached_angle = angle
+                self._cached_scale = scale
+                self._cached_surf = pygame.transform.rotozoom(
+                    self._get_base_surf(), -angle, max(scale, 0.1)
+                )
 
     def draw(self, surface: pygame.Surface) -> None:
-        surface.blit(self.surf, self.pos - glm.vec2(self.surf.get_size()) / 2)
+        surf = self._cached_surf
+        surface.blit(surf, self.pos - glm.vec2(surf.get_size()) / 2)
 
 
 class Portal:
@@ -131,11 +178,18 @@ class Portal:
         "_surf",
         "color",
         "particle_emitter",
-        "active",
+        "_active",
         "deactivate_when_empty",
+        "perp",
+        "exit",
+        "line",
+        "_cached_surf_active",
+        "_cached_surf_inactive",
     ]
 
-    def __init__(self, pos: glm.vec2, vec: glm.vec2, color: tuple[int, int, int]) -> None:
+    def __init__(
+        self, pos: glm.vec2, vec: glm.vec2, color: tuple[int, int, int]
+    ) -> None:
         self.pos: glm.vec2 = glm.vec2(pos)
         self.normal: glm.vec2 = glm.normalize(-glm.vec2(vec))
         self.width: int = 12
@@ -143,8 +197,25 @@ class Portal:
         self.color: list[int] = list(color)
         self._surf.fill(self.color)
 
-        self.active: bool = False
+        self._active: bool = False
         self.deactivate_when_empty: bool = False
+
+        # Cache computed properties (portal never moves)
+        self.perp: glm.vec2 = glm.normalize(glm.vec2(-self.normal.y, self.normal.x))
+        self.exit: glm.vec2 = self.pos + self.normal * 2
+        start = self.pos - self.perp * self.width / 2
+        end = self.pos + self.perp * self.width / 2
+        self.line: tuple[glm.vec2, glm.vec2] = (start, end)
+
+        # Cache rotated surfaces for active/inactive states
+        degrees = math.degrees(math.atan2(self.perp.y, self.perp.x))
+        angle = (360 + degrees) % 360
+        rotated = pygame.transform.rotate(self._surf, -angle)
+        self._cached_surf_inactive: pygame.Surface = rotated.copy()
+        self._cached_surf_inactive.set_alpha(100)
+        self._cached_surf_active: pygame.Surface = rotated.copy()
+        self._cached_surf_active.set_alpha(200)
+
         self.particle_emitter: ParticleEmitter = ParticleEmitter(
             pos=self.pos,
             vel=self.normal,
@@ -155,37 +226,24 @@ class Portal:
         )
 
     @property
-    def perp(self) -> glm.vec2:
-        return glm.normalize(glm.vec2(-self.normal.y, self.normal.x))
+    def active(self) -> bool:
+        return self._active
 
-    @property
-    def exit(self) -> glm.vec2:
-        return self.pos + self.normal * 2
-
-    @property
-    def line(self) -> tuple[glm.vec2, glm.vec2]:
-        start = self.pos - self.perp * self.width / 2
-        end = self.pos + self.perp * self.width / 2
-        return (start, end)
+    @active.setter
+    def active(self, value: bool) -> None:
+        self._active = value
 
     def burst(self) -> None:
         self.particle_emitter.burst()
 
     def update(self, dt: float) -> None:
-        if self.active:
+        if self._active:
             self.particle_emitter.update(dt)
-
-    @property
-    def surf(self) -> pygame.Surface:
-        degrees = math.degrees(math.atan2(self.perp.y, self.perp.x))
-        angle = (360 + degrees) % 360
-        surf = pygame.transform.rotate(self._surf, -angle)
-        surf.set_alpha(100 if not self.active else 200)
-        return surf
 
     def draw(self, surface: pygame.Surface) -> None:
         self.particle_emitter.draw(surface)
-        surface.blit(self.surf, self.pos - glm.vec2(self.surf.get_size()) / 2)
+        surf = self._cached_surf_active if self._active else self._cached_surf_inactive
+        surface.blit(surf, self.pos - glm.vec2(surf.get_size()) / 2)
 
 
 class Camera:
@@ -291,10 +349,9 @@ class ParticleEmitter:
                 self.create_particle()
             self.last_spawn = 0
 
-        for particle in self.particles[:]:
+        for particle in self.particles:
             particle.update(dt)
-            if not particle.alive:
-                self.particles.remove(particle)
+        self.particles = [p for p in self.particles if p.alive]
 
         if self.deactivate_after_burst and not self.particles:
             self.active = False
@@ -311,8 +368,11 @@ class ParticleEmitter:
 
         if isinstance(self.shape, self.Point):
             # alter the velocity angle +/- point spread
-            vel = glm.rotate(
-                vel, math.radians(random.uniform(-self.shape.spread, self.shape.spread))
+            vel = glm.vec2(
+                glm.rotate(
+                    vel,
+                    math.radians(random.uniform(-self.shape.spread, self.shape.spread)),
+                )
             )
 
         if isinstance(self.shape, self.Line):
@@ -337,15 +397,19 @@ class ParticleEmitter:
             pos = pos - center + point
 
         self.particles.append(
-            self.particle_class(pos, vel * speed, **self.particle_kwargs)
+            self.particle_class(pos, glm.vec2(vel * speed), **self.particle_kwargs)
         )
 
-    def burst(self, count: int | list[int] | None = None, deactivate_after: bool = False) -> None:
+    def burst(
+        self, count: int | list[int] | None = None, deactivate_after: bool = False
+    ) -> None:
         if isinstance(count, list):
-            count = range(*count) if len(count) == 2 else count[0]
+            iterations = range(*count) if len(count) == 2 else range(count[0])
+        elif count is None:
+            iterations = range(random.randint(5, 10))
         else:
-            count = range(random.randint(5, 10)) if count is None else range(count)
-        for _ in count:
+            iterations = range(count)
+        for _ in iterations:
             self.create_particle()
             self.deactivate_after_burst = deactivate_after
 
@@ -393,9 +457,11 @@ class Particle:
 
 
 class FadeOutParticle(Particle):
-    def __init__(self, pos: glm.vec2, vel: glm.vec2, color: tuple[int, int, int]) -> None:
+    def __init__(
+        self, pos: glm.vec2, vel: glm.vec2, color: tuple[int, int, int]
+    ) -> None:
         super().__init__(pos, vel)
-        self.color: list[int] | tuple[int, int, int] = color
+        self.color: list[int] = list(color)
         self.lifetime = 0.5
         self.speed = random.randint(1, 3)
         self.surf: pygame.Surface = pygame.Surface((1, 1))
@@ -403,7 +469,7 @@ class FadeOutParticle(Particle):
 
     def update(self, dt: float) -> None:
         super().update(dt)
-        self.surf.set_alpha(max(0, (1 - (self.age / self.lifetime)) * 255))
+        self.surf.set_alpha(int(max(0, (1 - (self.age / self.lifetime)) * 255)))
 
     def draw(self, surface: pygame.Surface) -> None:
         surface.blit(self.surf, self.pos)
