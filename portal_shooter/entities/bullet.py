@@ -55,6 +55,6 @@ class Bullet:
                     self._get_base_surf(), -angle, max(scale, 0.1)
                 )
 
-    def draw(self, surface: pygame.Surface) -> None:
+    def draw(self, surface: pygame.Surface, offset: glm.vec2 = glm.vec2()) -> None:
         surf = self._cached_surf
-        surface.blit(surf, self.pos - glm.vec2(surf.get_size()) / 2)
+        surface.blit(surf, self.pos - offset - glm.vec2(surf.get_size()) / 2)

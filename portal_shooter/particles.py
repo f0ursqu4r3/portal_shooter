@@ -27,8 +27,8 @@ class Particle:
         self.pos += self.vel * self.speed * dt
         self.age += dt
 
-    def draw(self, surface: pygame.Surface) -> None:
-        surface.set_at([*map(int, self.pos)], self.color)
+    def draw(self, surface: pygame.Surface, offset: glm.vec2 = glm.vec2()) -> None:
+        surface.set_at([*map(int, self.pos - offset)], self.color)
 
 
 class FadeOutParticle(Particle):
@@ -46,8 +46,8 @@ class FadeOutParticle(Particle):
         super().update(dt)
         self.surf.set_alpha(int(max(0, (1 - (self.age / self.lifetime)) * 255)))
 
-    def draw(self, surface: pygame.Surface) -> None:
-        surface.blit(self.surf, self.pos)
+    def draw(self, surface: pygame.Surface, offset: glm.vec2 = glm.vec2()) -> None:
+        surface.blit(self.surf, self.pos - offset)
 
 
 class ParticleEmitter:
@@ -188,21 +188,22 @@ class ParticleEmitter:
             self.create_particle()
             self.deactivate_after_burst = deactivate_after
 
-    def draw(self, surface: pygame.Surface) -> None:
+    def draw(self, surface: pygame.Surface, offset: glm.vec2 = glm.vec2()) -> None:
         if self.debug:
             c = (0, 200, 200)
+            p = self.pos - offset
             if isinstance(self.shape, self.Point):
-                surface.set_at([*map(int, self.pos)], c)
+                surface.set_at([*map(int, p)], c)
             elif isinstance(self.shape, self.Line):
                 half = self.shape.vec / 2
-                start = self.pos - half
-                end = self.pos + half
+                start = p - half
+                end = p + half
                 pygame.draw.line(surface, c, start, end)
             elif isinstance(self.shape, self.Circle):
-                pygame.draw.circle(surface, c, self.pos, self.shape.radius, 1)
+                pygame.draw.circle(surface, c, p, self.shape.radius, 1)
             elif isinstance(self.shape, self.Rectangle):
                 center = self.shape.size / 2
-                pygame.draw.rect(surface, c, (self.pos - center, self.shape.size), 1)
+                pygame.draw.rect(surface, c, (p - center, self.shape.size), 1)
 
         for particle in self.particles:
-            particle.draw(surface)
+            particle.draw(surface, offset)

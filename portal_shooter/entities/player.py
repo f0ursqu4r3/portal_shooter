@@ -34,14 +34,17 @@ class Player:
     def rect(self) -> pygame.Rect:
         return pygame.Rect(self.pos - glm.vec2(2), (4, 4))
 
-    def draw(self, surface: pygame.Surface, mpos: glm.vec2) -> None:
+    def draw(
+        self, surface: pygame.Surface, mpos: glm.vec2, offset: glm.vec2 = glm.vec2()
+    ) -> None:
         vec = glm.normalize(mpos - self.pos)
+        p = self.pos - offset
         # draw the particles
-        self.emitter.draw(surface)
+        self.emitter.draw(surface, offset)
 
         # draw the "gun"
         pygame.draw.line(
-            surface, (0, 200, 200), self.pos + vec * 4, self.pos + vec * 10, 1
+            surface, (0, 200, 200), p + vec * 4, p + vec * 10, 1
         )
         # draw the player
-        pygame.draw.circle(surface, (0, 200, 0), self.pos, 2)
+        pygame.draw.circle(surface, (0, 200, 0), p, 2)

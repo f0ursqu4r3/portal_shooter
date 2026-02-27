@@ -7,7 +7,8 @@ import random
 import pygame
 from pyglm import glm
 
-from portal_shooter.entities import Bullet, Player, Portal, Shell
+from portal_shooter.entities import Bullet, Camera, Player, Portal, Shell
+from portal_shooter.map import GameMap, compute_visibility
 from portal_shooter.sound import SoundPlayer
 from portal_shooter.util import get_collisions, intersect, point_dist_to_line, remap
 
@@ -34,8 +35,15 @@ class Game:
         self.clock: pygame.time.Clock = pygame.time.Clock()
         self.mpos: glm.vec2 = glm.vec2(pygame.mouse.get_pos()) / self.screen_scale
 
-        self.player: Player = Player(self.screen_size / 2, glm.vec2())
+        self.game_map: GameMap = GameMap()
+        self.player: Player = Player(self.game_map.spawn_pos, glm.vec2())
+        self.camera: Camera = Camera(
+            self.player.pos,
+            target=self.player,
+            map_bounds=self.game_map.bounds,
+        )
         self.player_walk_timer: float = 0
+        self.mpos_world: glm.vec2 = glm.vec2()
 
         self.entities: list[Bullet | Shell] = []
         self.bullets: list[Bullet] = []
@@ -65,6 +73,8 @@ class Game:
 
     def process_events(self) -> None:
         self.mpos = glm.vec2(pygame.mouse.get_pos()) / self.screen_scale
+        cam_offset = self.camera.pos - self.screen_size / 2
+        self.mpos_world = self.mpos + cam_offset
 
         self.process_pygame_events()
 
@@ -93,7 +103,7 @@ class Game:
             self.player_walk_timer = 0
 
         if pygame.mouse.get_pressed()[0] and not self.shot_timer:
-            fire_vec = glm.normalize(self.mpos - self.player.pos)
+            fire_vec = glm.normalize(self.mpos_world - self.player.pos)
             bullet = Bullet(self.player.pos + fire_vec * 15, fire_vec)
             self.entities.append(bullet)
             self.bullets.append(bullet)
@@ -121,11 +131,15 @@ class Game:
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_q:
                     self.portals[0] = Portal(
-                        self.mpos, (self.mpos - self.player.pos), (255, 127, 0)
+                        self.mpos_world,
+                        (self.mpos_world - self.player.pos),
+                        (255, 127, 0),
                     )
                 elif event.key == pygame.K_e:
                     self.portals[1] = Portal(
-                        self.mpos, (self.mpos - self.player.pos), (41, 174, 255)
+                        self.mpos_world,
+                        (self.mpos_world - self.player.pos),
+                        (41, 174, 255),
                     )
                 elif event.key == pygame.K_z:
                     self.portals[0] = None
@@ -143,7 +157,7 @@ class Game:
                 self._layer_size = self.screen.get_size()
 
     def update(self) -> None:
-        tdt = self.clock.tick() * 0.001
+        tdt = min(self.clock.tick() * 0.001, 0.05)
 
         if self.player.health > 0:
             self.time_scale = min(1, self.time_scale + tdt * 2)
@@ -155,37 +169,23 @@ class Game:
 
         self.player_walk_timer += dt
 
+        old_pos = glm.vec2(self.player.pos)
         self.player.update(dt)
-
-        if self.player.pos.x < 0:
-            self.player.pos.x = 0
-        elif self.player.pos.x > self.screen_size.x:
-            self.player.pos.x = self.screen_size.x
-
-        if self.player.pos.y < 0:
-            self.player.pos.y = 0
-        elif self.player.pos.y > self.screen_size.y:
-            self.player.pos.y = self.screen_size.y
+        self.game_map.collide_player(self.player, old_pos)
+        self.camera.update(dt, self.screen_size)
 
         self.do_portal(self.player)
 
         dead: set[Bullet | Shell] = set()
         for entity in self.entities:
+            old_pos = glm.vec2(entity.pos)
             entity.update(dt)
 
             if entity.life < 0:
                 dead.add(entity)
                 continue
 
-            if not (0 < entity.pos.x < self.screen_size.x):
-                entity.pos.x = 0 if entity.pos.x < 0 else self.screen_size.x
-                entity.vel.x *= -1
-                volume = remap(glm.distance(self.player.pos, entity.pos), 200, 0, 0, 1)
-                if volume:
-                    self.sound_payer.play("Ricochet1", volume=volume)
-            if not (0 < entity.pos.y < self.screen_size.y):
-                entity.pos.y = 0 if entity.pos.y < 0 else self.screen_size.y
-                entity.vel.y *= -1
+            if self.game_map.collide_entity(entity, old_pos):
                 volume = remap(glm.distance(self.player.pos, entity.pos), 200, 0, 0, 1)
                 if volume:
                     self.sound_payer.play("Ricochet1", volume=volume)
@@ -234,18 +234,34 @@ class Game:
                 self.sound_payer.play("Portal1", volume=volume)
 
     def draw(self) -> None:
-        self.screen.fill((60, 50, 60))
+        cam_offset = self.camera.pos - self.screen_size / 2
+        self.screen.fill((10, 8, 12))
+        self.game_map.draw(self.screen, cam_offset)
         self.layer.fill((0, 0, 0, 0))
 
         for entity in self.entities:
-            entity.draw(self.layer)
+            entity.draw(self.layer, cam_offset)
 
-        self.player.draw(self.layer, self.mpos)
+        self.player.draw(self.layer, self.mpos_world, cam_offset)
 
         for portal in self.portals:
             if portal:
-                portal.draw(self.layer)
+                portal.draw(self.layer, cam_offset)
 
         self.screen.blit(self.layer, self.screen_shake)
+
+        # Fog of war
+        vis_points = compute_visibility(
+            self.player.pos, self.game_map.walls, max_dist=200
+        )
+        if len(vis_points) >= 3:
+            fog = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+            fog.fill((0, 0, 0, 200))
+            screen_pts = [
+                (int(p.x - cam_offset.x), int(p.y - cam_offset.y)) for p in vis_points
+            ]
+            pygame.draw.polygon(fog, (0, 0, 0, 0), screen_pts)
+            self.screen.blit(fog, (0, 0))
+
         pygame.transform.scale(self.screen, self.window_size, self.window)
         pygame.display.flip()

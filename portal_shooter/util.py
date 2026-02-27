@@ -36,6 +36,26 @@ def point_dist_to_line(point: glm.vec2, segment: tuple[glm.vec2, glm.vec2]) -> f
     return glm.length(p1 + v1 * t - point)
 
 
+def ray_segment_intersect(
+    ray_origin: glm.vec2,
+    ray_end: glm.vec2,
+    seg_start: glm.vec2,
+    seg_end: glm.vec2,
+) -> glm.vec2 | None:
+    """Return the intersection point of ray (origin->end) with segment, or None."""
+    r = ray_end - ray_origin
+    s = seg_end - seg_start
+    denom = cross2d(r, s)
+    if abs(denom) < 1e-10:
+        return None
+    qp = seg_start - ray_origin
+    t = cross2d(qp, s) / denom
+    u = cross2d(qp, r) / denom
+    if 0 <= t <= 1 and 0 <= u <= 1:
+        return ray_origin + r * t
+    return None
+
+
 def get_collisions(entity: Any, others: list[Any]) -> list[Any]:
     if not hasattr(entity, "rect"):
         raise AttributeError("Entity must have a rect attribute")

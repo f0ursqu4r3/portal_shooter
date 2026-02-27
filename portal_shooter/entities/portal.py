@@ -78,7 +78,7 @@ class Portal:
         if self._active:
             self.particle_emitter.update(dt)
 
-    def draw(self, surface: pygame.Surface) -> None:
-        self.particle_emitter.draw(surface)
+    def draw(self, surface: pygame.Surface, offset: glm.vec2 = glm.vec2()) -> None:
+        self.particle_emitter.draw(surface, offset)
         surf = self._cached_surf_active if self._active else self._cached_surf_inactive
-        surface.blit(surf, self.pos - glm.vec2(surf.get_size()) / 2)
+        surface.blit(surf, self.pos - offset - glm.vec2(surf.get_size()) / 2)

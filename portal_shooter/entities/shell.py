@@ -49,7 +49,7 @@ class Shell:
         self.pos += self.vel * self.speed * dt
         self.life -= dt
         self.speed *= 1 - dt * 1.8
-        if self.vel:
+        if self.vel and self.speed > 0.01:
             vel = glm.normalize(self.vel)
             degrees = math.degrees(math.atan2(vel.y, vel.x))
             angle = round(
@@ -69,6 +69,6 @@ class Shell:
                     self._get_base_surf(), -angle, max(scale, 0.1)
                 )
 
-    def draw(self, surface: pygame.Surface) -> None:
+    def draw(self, surface: pygame.Surface, offset: glm.vec2 = glm.vec2()) -> None:
         surf = self._cached_surf
-        surface.blit(surf, self.pos - glm.vec2(surf.get_size()) / 2)
+        surface.blit(surf, self.pos - offset - glm.vec2(surf.get_size()) / 2)
