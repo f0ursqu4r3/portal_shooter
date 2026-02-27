@@ -1,0 +1,17 @@
+[project]
+name = "portal-shooter"
+version = "0.1.0"
+description = "pygame portal shooter playground"
+requires-python = ">=3.9"
+dependencies = [
+    "pygame-ce>=2.5.6",
+    "pyglm>=2.8.3",
+    "tqdm>=4.67.3",
+]
+
+[dependency-groups]
+dev = [
+    "autopep8",
+    "pylint",
+    "snakeviz",
+]
