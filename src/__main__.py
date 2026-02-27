@@ -1,3 +1,3 @@
-from .main import Game
+from src.main import Game
 
 Game().run()
