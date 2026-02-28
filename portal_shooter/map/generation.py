@@ -273,7 +273,8 @@ def collect_walls(rooms: list[Room], corridors: list[list[glm.vec2]]) -> list[Wa
                 a, b = coords[i], coords[i + 1]
                 walls.append((glm.vec2(a[0], a[1]), glm.vec2(b[0], b[1])))
 
-    _extract_walls(union)
+    if isinstance(union, (Polygon, MultiPolygon)):
+        _extract_walls(union)
     return walls
 
 
