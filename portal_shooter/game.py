@@ -1,24 +1,34 @@
 from __future__ import annotations
 
 import cProfile
+import math
 import pstats
 import random
 
 import pygame
 from pyglm import glm
 
-from portal_shooter.entities import Bullet, Camera, Pickup, PickupKind, Player, Portal, Shell
+from portal_shooter.entities import (
+    Bullet,
+    Camera,
+    Pickup,
+    PickupKind,
+    Player,
+    Portal,
+    Shell,
+)
 from portal_shooter.hud import HUD
 from portal_shooter.map import GameMap, compute_visibility
 from portal_shooter.sound import SoundPlayer
 from portal_shooter.util import get_collisions, intersect, point_dist_to_line, remap
+from portal_shooter.weapons import WEAPON_STATS, WeaponKind
 
 pygame.init()
 
 
 class Game:
     def __init__(self) -> None:
-        self.window_size: glm.vec2 = glm.vec2(720)
+        self.window_size: glm.vec2 = glm.vec2(1280, 720)
         self.window: pygame.Surface = pygame.display.set_mode(
             self.window_size, pygame.DOUBLEBUF
         )
@@ -32,7 +42,7 @@ class Game:
         self.screen_size: glm.vec2 = glm.vec2(self.screen.get_size())
         self.running: bool = True
 
-        self.sound_payer: SoundPlayer = SoundPlayer("./assets/sounds", "wav")
+        self.sound_player: SoundPlayer = SoundPlayer("./assets/sounds", "wav")
 
         self.clock: pygame.time.Clock = pygame.time.Clock()
         self.mpos: glm.vec2 = glm.vec2(pygame.mouse.get_pos()) / self.screen_scale
@@ -59,8 +69,15 @@ class Game:
 
         self.time_scale: float = 1
         self.shot_timer: float = 0
-        self.fire_rate: float = 1 / 40
         self.speed_buff_timer: float = 0
+
+        self.current_weapon: WeaponKind = WeaponKind.PISTOL
+        self.ammo: dict[WeaponKind, int] = {
+            WeaponKind.PISTOL: 0,
+            WeaponKind.SHOTGUN: 0,
+            WeaponKind.SMG: 0,
+            WeaponKind.RIFLE: 0,
+        }
 
         self.hud: HUD = HUD()
 
@@ -111,29 +128,57 @@ class Game:
             )
             and self.player_walk_timer >= 0.1
         ):
-            self.sound_payer.play("Step1", volume=0.2)
+            self.sound_player.play("Step1", volume=0.2)
             self.player_walk_timer = 0
 
         if pygame.mouse.get_pressed()[0] and not self.shot_timer:
-            fire_vec = glm.normalize(self.mpos_world - self.player.pos)
-            bullet = Bullet(self.player.pos + fire_vec * 15, fire_vec)
-            self.entities.append(bullet)
-            self.bullets.append(bullet)
+            stats = WEAPON_STATS[self.current_weapon]
 
-            eject_vec = glm.vec2(-fire_vec.y, fire_vec.x)
-            self.entities.append(
-                Shell(self.player.pos + (fire_vec * 4) + (eject_vec * 4), eject_vec)
-            )
+            # Check ammo
+            if stats.ammo_per_shot and self.ammo[self.current_weapon] < stats.ammo_per_shot:
+                pass  # No ammo — don't fire
+            else:
+                fire_vec = glm.normalize(self.mpos_world - self.player.pos)
 
-            shake = fire_vec * -(random.random() * 1.5 + 1.5)
-            self.player.vel = shake * 10
-            self.sound_payer.play("Shoot1")
+                for _ in range(stats.pellets):
+                    spread_offset = random.uniform(
+                        -stats.spread / 2, stats.spread / 2
+                    ) if stats.spread else 0.0
+                    angle = math.atan2(fire_vec.y, fire_vec.x) + spread_offset
+                    pellet_dir = glm.vec2(math.cos(angle), math.sin(angle))
+                    bullet = Bullet(
+                        self.player.pos + pellet_dir * 15,
+                        pellet_dir,
+                        speed=stats.bullet_speed,
+                        damage=stats.damage,
+                        piercing=stats.piercing,
+                        color=stats.color,
+                    )
+                    self.entities.append(bullet)
+                    self.bullets.append(bullet)
 
-            self.camera.shake = glm.vec2(shake)
+                # Consume ammo
+                if stats.ammo_per_shot:
+                    self.ammo[self.current_weapon] -= stats.ammo_per_shot
 
-            rate = self.fire_rate / 2 if self.speed_buff_timer > 0 else self.fire_rate
-            self.shot_timer = rate
-            self.time_scale = 0.2
+                eject_vec = glm.vec2(-fire_vec.y, fire_vec.x)
+                self.entities.append(
+                    Shell(
+                        self.player.pos + (fire_vec * 4) + (eject_vec * 4),
+                        eject_vec,
+                        self.current_weapon,
+                    )
+                )
+
+                shake = fire_vec * -(random.random() * 1.5 + 1.5) * stats.recoil
+                self.player.vel = shake * 10
+                self.sound_player.play("Shoot1")
+
+                self.camera.shake = glm.vec2(shake)
+
+                rate = stats.fire_rate / 2 if self.speed_buff_timer > 0 else stats.fire_rate
+                self.shot_timer = rate
+                self.time_scale = 0.2
 
     def process_pygame_events(self) -> None:
         for event in pygame.event.get():
@@ -144,15 +189,11 @@ class Game:
             elif event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_q, pygame.K_e):
                     aim_dir = self.mpos_world - self.player.pos
-                    hit = self.game_map.find_nearest_wall_hit(
-                        self.player.pos, aim_dir
-                    )
+                    hit = self.game_map.find_nearest_wall_hit(self.player.pos, aim_dir)
                     if hit:
                         idx = 0 if event.key == pygame.K_q else 1
                         color = (255, 127, 0) if idx == 0 else (41, 174, 255)
-                        self.portals[idx] = Portal(
-                            hit[0] + hit[1] * 2, hit[1], color
-                        )
+                        self.portals[idx] = Portal(hit[0] + hit[1] * 2, hit[1], color)
                 elif event.key == pygame.K_z:
                     self.portals[0] = None
                 elif event.key == pygame.K_x:
@@ -161,13 +202,20 @@ class Game:
                 elif event.key == pygame.K_SPACE:
                     print(f"{self.player.health=} {self.clock.get_fps()=}")
 
+                elif event.key == pygame.K_1:
+                    self.current_weapon = WeaponKind.PISTOL
+                elif event.key == pygame.K_2:
+                    self.current_weapon = WeaponKind.SHOTGUN
+                elif event.key == pygame.K_3:
+                    self.current_weapon = WeaponKind.SMG
+                elif event.key == pygame.K_4:
+                    self.current_weapon = WeaponKind.RIFLE
+
             elif event.type == pygame.MOUSEWHEEL:
-                self.screen_scale = min(6, max(self.screen_scale + event.y * 0.05, 1))
-                self.screen = pygame.Surface(self.window_size / self.screen_scale)
-                self.screen_size = glm.vec2(self.screen.get_size())
-                self.layer = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-                self.fog = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-                self._layer_size = self.screen.get_size()
+                weapons = list(WeaponKind)
+                idx = weapons.index(self.current_weapon)
+                idx = (idx + event.y) % len(weapons)
+                self.current_weapon = weapons[idx]
 
     def update(self) -> None:
         tdt = min(self.clock.tick() * 0.001, 0.05)
@@ -199,18 +247,18 @@ class Game:
             if self.game_map.collide_entity(entity, old_pos):
                 volume = remap(glm.distance(self.player.pos, entity.pos), 200, 0, 0, 1)
                 if volume:
-                    self.sound_payer.play("Ricochet1", volume=volume)
+                    self.sound_player.play("Ricochet1", volume=volume)
 
             self.do_portal(entity)
 
         for collision in get_collisions(self.player, self.bullets):
-            self.player.health -= 10
+            self.player.health -= collision.damage
             dead.add(collision)
             if self.player.health > 0:
                 vel = glm.vec2(-collision.vel.y, collision.vel.x)
                 self.player.emitter.vel = vel
                 self.player.emitter.burst()
-                self.sound_payer.play("Hurt1")
+                self.sound_player.play("Hurt1")
             else:
                 self.player.emitter.vel = None
                 self.player.emitter.burst(50)
@@ -233,9 +281,22 @@ class Game:
                     self.player.health = min(
                         self.player.health + 25, self.player.max_health
                     )
-                else:
+                elif pickup.kind == PickupKind.SPEED:
                     self.speed_buff_timer = 5.0
-                self.sound_payer.play("Portal1", volume=0.5)
+                else:
+                    # Ammo pickup: give 5-10 ammo for a random non-pistol weapon
+                    ammo_weapons = [
+                        WeaponKind.SHOTGUN,
+                        WeaponKind.SMG,
+                        WeaponKind.RIFLE,
+                    ]
+                    weapon = random.choice(ammo_weapons)
+                    wstats = WEAPON_STATS[weapon]
+                    amount = random.randint(5, 10)
+                    self.ammo[weapon] = min(
+                        self.ammo[weapon] + amount, wstats.max_ammo
+                    )
+                self.sound_player.play("Portal1", volume=0.5)
                 collected.append(pickup)
         if collected:
             self.pickups = [p for p in self.pickups if p not in collected]
@@ -264,7 +325,7 @@ class Game:
                 portal.burst()
                 dest.burst()
                 volume = remap(glm.distance(self.player.pos, entity.pos), 200, 0, 0, 1)
-                self.sound_payer.play("Portal1", volume=volume)
+                self.sound_player.play("Portal1", volume=volume)
 
     def draw(self) -> None:
         cam_offset = self.camera.pos + self.camera.shake - self.screen_size / 2

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-
 import pygame
 from pyglm import glm
 
@@ -13,28 +11,32 @@ class Bullet(Entity):
         "speed",
         "_speed",
         "life",
-        "_cached_surf",
-        "_cached_angle",
-        "_cached_scale",
+        "damage",
+        "piercing",
+        "color",
+        "_trail_len",
     ]
 
-    _base_surf: pygame.Surface | None = None
-
-    @classmethod
-    def _get_base_surf(cls) -> pygame.Surface:
-        if cls._base_surf is None:
-            cls._base_surf = pygame.Surface((4, 2))
-            pygame.draw.rect(cls._base_surf, (100, 100, 100), (0, 0, 4, 2))
-        return cls._base_surf
-
-    def __init__(self, pos: glm.vec2, vel: glm.vec2) -> None:
+    def __init__(
+        self,
+        pos: glm.vec2,
+        vel: glm.vec2,
+        *,
+        speed: int = 100,
+        damage: int = 10,
+        piercing: bool = False,
+        color: tuple[int, int, int] = (100, 100, 100),
+    ) -> None:
         super().__init__(pos, vel)
-        self.speed: int = 100
-        self._speed: int = 100
-        self.life: float = 5
-        self._cached_angle: float = -1.0
-        self._cached_scale: float = -1.0
-        self._cached_surf: pygame.Surface = self._get_base_surf()
+        self.speed: int = speed
+        self._speed: int = speed
+        # Lifetime caps max travel distance to ~1500 units (just over map diagonal)
+        self.life: float = 1500 / speed
+        self.damage: int = damage
+        self.piercing: bool = piercing
+        self.color: tuple[int, int, int] = color
+        # Trail length proportional to speed — faster rounds leave longer streaks
+        self._trail_len: float = speed * 0.018
 
     @property
     def rect(self) -> pygame.Rect:
@@ -43,17 +45,46 @@ class Bullet(Entity):
     def update(self, dt: float) -> None:
         self.pos += self.vel * self.speed * dt
         self.life -= dt
-        if self.vel:
-            vel = glm.normalize(self.vel)
-            angle = round((360 + math.degrees(math.atan2(vel.y, vel.x))) % 360)
-            scale = round(self.life / 5, 1)
-            if angle != self._cached_angle or scale != self._cached_scale:
-                self._cached_angle = angle
-                self._cached_scale = scale
-                self._cached_surf = pygame.transform.rotozoom(
-                    self._get_base_surf(), -angle, max(scale, 0.1)
-                )
 
     def draw(self, surface: pygame.Surface, offset: glm.vec2 = glm.vec2()) -> None:
-        surf = self._cached_surf
-        surface.blit(surf, self.pos - offset - glm.vec2(surf.get_size()) / 2)
+        if not self.vel:
+            return
+
+        ox, oy = offset.x, offset.y
+        nvx, nvy = glm.normalize(self.vel)
+
+        # Fade during last 20% of lifetime
+        max_life = 1500 / self.speed
+        life_fade = min(1.0, self.life / (max_life * 0.2))
+
+        r, g, b = self.color
+        tl = self._trail_len
+
+        # Draw trail as 3 segments with decreasing alpha (tail -> tip)
+        for i in range(3):
+            t0 = i / 3
+            t1 = (i + 1) / 3
+            alpha = int((1 - t1) * 160 * life_fade)
+            if alpha <= 0:
+                continue
+            x0 = self.pos.x - nvx * tl * t0 - ox
+            y0 = self.pos.y - nvy * tl * t0 - oy
+            x1 = self.pos.x - nvx * tl * t1 - ox
+            y1 = self.pos.y - nvy * tl * t1 - oy
+            pygame.draw.line(
+                surface, (r, g, b, alpha), (int(x0), int(y0)), (int(x1), int(y1))
+            )
+
+        # Bright core at tip — white-hot center blended toward weapon color
+        tip_alpha = int(230 * life_fade)
+        tr = min(255, r + 120)
+        tg = min(255, g + 120)
+        tb = min(255, b + 120)
+        sx = int(self.pos.x - ox)
+        sy = int(self.pos.y - oy)
+        surface.set_at((sx, sy), (tr, tg, tb, tip_alpha))
+
+        # Sub-pixel bright leading edge (1px ahead of tip)
+        lx = int(self.pos.x + nvx * 1 - ox)
+        ly = int(self.pos.y + nvy * 1 - oy)
+        surface.set_at((lx, ly), (255, 255, 255, int(180 * life_fade)))

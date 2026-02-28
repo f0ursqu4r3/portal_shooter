@@ -65,6 +65,12 @@ def collide_entity(entity: Bullet | Shell, old_pos: glm.vec2, wall_grid: WallGri
             from portal_shooter.entities.bullet import Bullet
 
             if isinstance(entity, Bullet):
+                # Piercing bullets pass through the first wall hit
+                if entity.piercing:
+                    entity.piercing = False
+                    entity.pos = glm.vec2(old_pos)
+                    return False
+
                 # Only ricochet at grazing angles (< ~30° from wall surface)
                 incidence = abs(glm.dot(glm.normalize(entity.vel), n))
                 if incidence < 0.5:

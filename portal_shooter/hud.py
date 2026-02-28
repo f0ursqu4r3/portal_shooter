@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 
 import pygame
 
+from portal_shooter.weapons import WEAPON_STATS, WeaponKind
+
 if TYPE_CHECKING:
     from portal_shooter.game import Game
 
@@ -24,6 +26,10 @@ class HUD:
         "_minimap_bg",
         "_minimap_size",
         "_timer",
+        "_weapon_labels",
+        "_cached_ammo_text",
+        "_cached_ammo_val",
+        "_cached_ammo_weapon",
     ]
 
     def __init__(self) -> None:
@@ -54,6 +60,23 @@ class HUD:
         self._minimap_size: int = 120
         self._timer: float = 0
 
+        # Weapon HUD
+        _abbrevs: dict[WeaponKind, str] = {
+            WeaponKind.PISTOL: "PST",
+            WeaponKind.SHOTGUN: "SHG",
+            WeaponKind.SMG: "SMG",
+            WeaponKind.RIFLE: "RFL",
+        }
+        self._weapon_labels: dict[WeaponKind, pygame.Surface] = {
+            kind: self._font_sm.render(
+                abbr, False, WEAPON_STATS[kind].color
+            )
+            for kind, abbr in _abbrevs.items()
+        }
+        self._cached_ammo_text: pygame.Surface | None = None
+        self._cached_ammo_val: int = -1
+        self._cached_ammo_weapon: WeaponKind = WeaponKind.PISTOL
+
     def bake_minimap(self, game: Game) -> None:
         """Pre-render static minimap geometry (rooms + corridors)."""
         size = self._minimap_size
@@ -83,6 +106,7 @@ class HUD:
 
         self._draw_health(window, game)
         self._draw_speed_buff(window, game)
+        self._draw_weapon(window, game)
         self._draw_portal_indicators(window, game)
         self._draw_minimap(window, game)
         self._draw_crosshair(window)
@@ -142,6 +166,30 @@ class HUD:
             f"{game.speed_buff_timer:.1f}", False, (220, 200, 40)
         )
         window.blit(countdown, (bar_x + bar_w + 6, y))
+
+    def _draw_weapon(self, window: pygame.Surface, game: Game) -> None:
+        x, y = 8, 670
+        weapon = game.current_weapon
+        label = self._weapon_labels[weapon]
+        window.blit(label, (x, y))
+
+        # Ammo count
+        stats = WEAPON_STATS[weapon]
+        if stats.ammo_per_shot == 0:
+            ammo_str = "\u221e"
+            ammo_val = -2  # sentinel for infinity
+        else:
+            ammo_val = game.ammo[weapon]
+            ammo_str = str(ammo_val)
+
+        if ammo_val != self._cached_ammo_val or weapon != self._cached_ammo_weapon:
+            self._cached_ammo_val = ammo_val
+            self._cached_ammo_weapon = weapon
+            self._cached_ammo_text = self._font_sm.render(
+                ammo_str, False, (200, 200, 200)
+            )
+        assert self._cached_ammo_text is not None
+        window.blit(self._cached_ammo_text, (x + label.get_width() + 6, y))
 
     def _draw_portal_indicators(self, window: pygame.Surface, game: Game) -> None:
         y = 692

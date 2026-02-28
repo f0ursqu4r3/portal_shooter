@@ -12,11 +12,13 @@ from portal_shooter.entities.entity import Entity
 class PickupKind(enum.Enum):
     HEALTH = "health"
     SPEED = "speed"
+    AMMO = "ammo"
 
 
 _COLORS: dict[PickupKind, tuple[int, int, int]] = {
     PickupKind.HEALTH: (0, 200, 80),
     PickupKind.SPEED: (220, 200, 40),
+    PickupKind.AMMO: (100, 200, 220),
 }
 
 _SIZE = 4  # half-size for collision rect
@@ -46,7 +48,7 @@ class Pickup(Entity):
             # Draw a + cross
             pygame.draw.line(surface, self.color, (p.x - 3, p.y), (p.x + 3, p.y), 1)
             pygame.draw.line(surface, self.color, (p.x, p.y - 3), (p.x, p.y + 3), 1)
-        else:
+        elif self.kind == PickupKind.SPEED:
             # Draw a diamond
             pts = [
                 (p.x, p.y - 3),
@@ -55,3 +57,8 @@ class Pickup(Entity):
                 (p.x - 3, p.y),
             ]
             pygame.draw.polygon(surface, self.color, pts, 1)
+        else:
+            # Ammo: small square
+            pygame.draw.rect(
+                surface, self.color, (p.x - 2, p.y - 2, 5, 5), 1
+            )

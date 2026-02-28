@@ -326,7 +326,8 @@ def add_boundary_walls(width: int, height: int) -> list[Wall]:
 def generate_pickup_positions(rooms: list[Room]) -> list[tuple[glm.vec2, str]]:
     """Generate pickup positions, one per qualifying room (skipping room 0).
 
-    Returns list of (position, kind_str) tuples where kind_str is "health" or "speed".
+    Returns list of (position, kind_str) tuples where kind_str is
+    "health", "speed", or "ammo".
     """
     positions: list[tuple[glm.vec2, str]] = []
     for room in rooms[1:]:
@@ -334,6 +335,12 @@ def generate_pickup_positions(rooms: list[Room]) -> list[tuple[glm.vec2, str]]:
             continue
         offset = glm.vec2(random.uniform(-10, 10), random.uniform(-10, 10))
         pos = room.center + offset
-        kind = "health" if random.random() < 0.7 else "speed"
+        roll = random.random()
+        if roll < 0.4:
+            kind = "health"
+        elif roll < 0.6:
+            kind = "speed"
+        else:
+            kind = "ammo"
         positions.append((pos, kind))
     return positions
