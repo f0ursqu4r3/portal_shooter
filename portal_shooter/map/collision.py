@@ -65,9 +65,14 @@ def collide_entity(entity: Bullet | Shell, old_pos: glm.vec2, wall_grid: WallGri
             from portal_shooter.entities.bullet import Bullet
 
             if isinstance(entity, Bullet):
-                # Reflect velocity
-                entity.vel = entity.vel - n * 2 * glm.dot(entity.vel, n)
-                entity.pos = glm.vec2(old_pos)
+                # Only ricochet at grazing angles (< ~30° from wall surface)
+                incidence = abs(glm.dot(glm.normalize(entity.vel), n))
+                if incidence < 0.5:
+                    entity.vel = entity.vel - n * 2 * glm.dot(entity.vel, n)
+                    entity.pos = glm.vec2(old_pos)
+                else:
+                    entity.life = 0
+                    entity.pos = glm.vec2(old_pos)
             else:
                 # Shell: stop
                 entity.vel = glm.vec2()
