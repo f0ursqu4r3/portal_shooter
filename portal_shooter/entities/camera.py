@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 class Camera:
-    __slots__ = ["pos", "offset", "target", "map_bounds"]
+    __slots__ = ["pos", "offset", "shake", "target", "map_bounds"]
 
     def __init__(
         self,
@@ -21,6 +21,7 @@ class Camera:
         self.pos: glm.vec2 = glm.vec2(pos)
         self.target: Player | None = target
         self.offset: glm.vec2 = glm.vec2(offset) if offset else glm.vec2()
+        self.shake: glm.vec2 = glm.vec2()
         self.map_bounds: glm.vec2 | None = map_bounds
 
     def update(self, dt: float, screen_size: glm.vec2) -> None:
@@ -36,3 +37,4 @@ class Camera:
         if self.map_bounds:
             half = screen_size / 2
             self.pos = glm.clamp(self.pos, half, self.map_bounds - half)
+        self.shake *= 0.85

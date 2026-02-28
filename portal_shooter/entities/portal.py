@@ -5,12 +5,12 @@ import math
 import pygame
 from pyglm import glm
 
+from portal_shooter.entities.entity import Entity
 from portal_shooter.particles import FadeOutParticle, ParticleEmitter
 
 
-class Portal:
+class Portal(Entity):
     __slots__ = [
-        "pos",
         "normal",
         "width",
         "_surf",
@@ -28,7 +28,7 @@ class Portal:
     def __init__(
         self, pos: glm.vec2, normal: glm.vec2, color: tuple[int, int, int]
     ) -> None:
-        self.pos: glm.vec2 = glm.vec2(pos)
+        super().__init__(pos)
         self.normal: glm.vec2 = glm.normalize(glm.vec2(normal))
         self.width: int = 12
         self._surf: pygame.Surface = pygame.Surface((self.width, 1))

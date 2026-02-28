@@ -17,6 +17,7 @@ from portal_shooter.map.generation import (
     collect_walls,
     connect,
     create_rooms,
+    generate_pickup_positions,
     split,
 )
 from portal_shooter.map.spatial_grid import WallGrid
@@ -37,6 +38,7 @@ class GameMap:
         "walls",
         "bounds",
         "spawn_pos",
+        "pickup_positions",
         "_floor_surface",
         "_wall_grid",
     ]
@@ -49,6 +51,7 @@ class GameMap:
         self.walls: list[Wall] = []
         self.bounds: glm.vec2 = glm.vec2(width, height)
         self.spawn_pos: glm.vec2 = glm.vec2(width / 2, height / 2)
+        self.pickup_positions: list[tuple[glm.vec2, str]] = []
         self._floor_surface: pygame.Surface | None = None
         self._wall_grid: WallGrid | None = None
 
@@ -65,6 +68,7 @@ class GameMap:
         self._wall_grid = WallGrid(self.walls)
         if self.rooms:
             self.spawn_pos = glm.vec2(self.rooms[0].center)
+            self.pickup_positions = generate_pickup_positions(self.rooms)
         self._bake_floor_surface()
 
     def _bake_floor_surface(self) -> None:

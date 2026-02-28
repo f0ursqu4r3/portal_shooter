@@ -7,7 +7,7 @@ import random
 import pygame
 from pyglm import glm
 
-from portal_shooter.entities import Bullet, Camera, Player, Portal, Shell
+from portal_shooter.entities import Bullet, Camera, Pickup, PickupKind, Player, Portal, Shell
 from portal_shooter.map import GameMap, compute_visibility
 from portal_shooter.sound import SoundPlayer
 from portal_shooter.util import get_collisions, intersect, point_dist_to_line, remap
@@ -50,11 +50,16 @@ class Game:
 
         self.portals: list[Portal | None] = [None, None]
 
+        self.pickups: list[Pickup] = [
+            Pickup(pos, PickupKind(kind))
+            for pos, kind in self.game_map.pickup_positions
+        ]
+
         self.time_scale: float = 1
         self.shot_timer: float = 0
         self.fire_rate: float = 1 / 40
+        self.speed_buff_timer: float = 0
 
-        self.screen_shake: glm.vec2 = glm.vec2()
         self.layer: pygame.Surface = pygame.Surface(
             self.screen.get_size(), pygame.SRCALPHA
         )
@@ -116,13 +121,14 @@ class Game:
                 Shell(self.player.pos + (fire_vec * 4) + (eject_vec * 4), eject_vec)
             )
 
-            shake = fire_vec * -(random.random() * 4 + 4)
+            shake = fire_vec * -(random.random() * 1.5 + 1.5)
             self.player.vel = shake * 10
             self.sound_payer.play("Shoot1")
 
-            self.screen_shake = shake
+            self.camera.shake = glm.vec2(shake)
 
-            self.shot_timer = self.fire_rate
+            rate = self.fire_rate / 2 if self.speed_buff_timer > 0 else self.fire_rate
+            self.shot_timer = rate
             self.time_scale = 0.2
 
     def process_pygame_events(self) -> None:
@@ -164,8 +170,6 @@ class Game:
 
         if self.player.health > 0:
             self.time_scale = min(1, self.time_scale + tdt * 2)
-
-        self.screen_shake = self.screen_shake * 0.9
 
         dt = tdt * self.time_scale
         self.shot_timer = max(0, self.shot_timer - dt)
@@ -217,6 +221,24 @@ class Game:
                 portal.update(dt)
                 portal.active = all(self.portals)
 
+        collected: list[Pickup] = []
+        for pickup in self.pickups:
+            pickup.update(dt)
+            if self.player.rect.colliderect(pickup.rect):
+                if pickup.kind == PickupKind.HEALTH:
+                    self.player.health = min(
+                        self.player.health + 25, self.player.max_health
+                    )
+                else:
+                    self.speed_buff_timer = 5.0
+                self.sound_payer.play("Portal1", volume=0.5)
+                collected.append(pickup)
+        if collected:
+            self.pickups = [p for p in self.pickups if p not in collected]
+
+        if self.speed_buff_timer > 0:
+            self.speed_buff_timer = max(0, self.speed_buff_timer - dt)
+
     def do_portal(self, entity: Player | Bullet | Shell) -> None:
         if not (all(self.portals) and entity.vel):
             return
@@ -241,7 +263,7 @@ class Game:
                 self.sound_payer.play("Portal1", volume=volume)
 
     def draw(self) -> None:
-        cam_offset = self.camera.pos - self.screen_size / 2
+        cam_offset = self.camera.pos + self.camera.shake - self.screen_size / 2
         self.screen.fill((10, 8, 12))
         self.game_map.draw(self.screen, cam_offset)
         self.layer.fill((0, 0, 0, 0))
@@ -249,13 +271,16 @@ class Game:
         for entity in self.entities:
             entity.draw(self.layer, cam_offset)
 
+        for pickup in self.pickups:
+            pickup.draw(self.layer, cam_offset)
+
         self.player.draw(self.layer, self.mpos_world, cam_offset)
 
         for portal in self.portals:
             if portal:
                 portal.draw(self.layer, cam_offset)
 
-        self.screen.blit(self.layer, self.screen_shake)
+        self.screen.blit(self.layer, (0, 0))
 
         # Fog of war
         cox, coy = cam_offset.x, cam_offset.y

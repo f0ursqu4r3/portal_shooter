@@ -5,11 +5,11 @@ import math
 import pygame
 from pyglm import glm
 
+from portal_shooter.entities.entity import Entity
 
-class Bullet:
+
+class Bullet(Entity):
     __slots__ = [
-        "pos",
-        "vel",
         "speed",
         "_speed",
         "life",
@@ -28,8 +28,7 @@ class Bullet:
         return cls._base_surf
 
     def __init__(self, pos: glm.vec2, vel: glm.vec2) -> None:
-        self.pos: glm.vec2 = glm.vec2(pos)
-        self.vel: glm.vec2 = glm.vec2(vel)
+        super().__init__(pos, vel)
         self.speed: int = 100
         self._speed: int = 100
         self.life: float = 5

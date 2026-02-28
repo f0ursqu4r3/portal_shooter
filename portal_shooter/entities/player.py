@@ -3,15 +3,15 @@ from __future__ import annotations
 import pygame
 from pyglm import glm
 
+from portal_shooter.entities.entity import Entity
 from portal_shooter.particles import FadeOutParticle, ParticleEmitter
 
 
-class Player:
-    __slots__ = ["pos", "vel", "speed", "max_health", "health", "emitter"]
+class Player(Entity):
+    __slots__ = ["speed", "max_health", "health", "emitter"]
 
     def __init__(self, pos: glm.vec2, vel: glm.vec2) -> None:
-        self.pos: glm.vec2 = glm.vec2(pos)
-        self.vel: glm.vec2 = glm.vec2(vel)
+        super().__init__(pos, vel)
         self.speed: int = 50
         self.max_health: int = 100
         self.health: int = 100
@@ -34,7 +34,7 @@ class Player:
     def rect(self) -> pygame.Rect:
         return pygame.Rect(self.pos - glm.vec2(2), (4, 4))
 
-    def draw(
+    def draw(  # type: ignore[override]
         self, surface: pygame.Surface, mpos: glm.vec2, offset: glm.vec2 = glm.vec2()
     ) -> None:
         vec = glm.normalize(mpos - self.pos)

@@ -6,11 +6,11 @@ import random
 import pygame
 from pyglm import glm
 
+from portal_shooter.entities.entity import Entity
 
-class Shell:
+
+class Shell(Entity):
     __slots__ = [
-        "pos",
-        "vel",
         "speed",
         "_speed",
         "life",
@@ -31,8 +31,7 @@ class Shell:
         return cls._base_surf
 
     def __init__(self, pos: glm.vec2, vel: glm.vec2) -> None:
-        self.pos: glm.vec2 = glm.vec2(pos)
-        self.vel: glm.vec2 = glm.vec2(vel)
+        super().__init__(pos, vel)
         self.speed: float = random.randint(20, 40)
         self._speed: int = int(self.speed)
         self.life: float = 5
