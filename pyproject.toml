@@ -18,5 +18,6 @@ dev = [
     "ruff>=0.15.4",
     "snakeviz",
     "ty>=0.0.19",
+    "types-shapely>=2.1.0.20250917",
     "types-tqdm>=4.67.3.20260205",
 ]
