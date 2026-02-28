@@ -26,10 +26,10 @@ class Portal:
     ]
 
     def __init__(
-        self, pos: glm.vec2, vec: glm.vec2, color: tuple[int, int, int]
+        self, pos: glm.vec2, normal: glm.vec2, color: tuple[int, int, int]
     ) -> None:
         self.pos: glm.vec2 = glm.vec2(pos)
-        self.normal: glm.vec2 = glm.normalize(-glm.vec2(vec))
+        self.normal: glm.vec2 = glm.normalize(glm.vec2(normal))
         self.width: int = 12
         self._surf: pygame.Surface = pygame.Surface((self.width, 1))
         self.color: list[int] = list(color)

@@ -58,6 +58,9 @@ class Game:
         self.layer: pygame.Surface = pygame.Surface(
             self.screen.get_size(), pygame.SRCALPHA
         )
+        self.fog: pygame.Surface = pygame.Surface(
+            self.screen.get_size(), pygame.SRCALPHA
+        )
         self._layer_size: tuple[int, int] = self.screen.get_size()
 
     def run(self) -> None:
@@ -129,18 +132,17 @@ class Game:
             ):
                 self.running = False
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_q:
-                    self.portals[0] = Portal(
-                        self.mpos_world,
-                        (self.mpos_world - self.player.pos),
-                        (255, 127, 0),
+                if event.key in (pygame.K_q, pygame.K_e):
+                    aim_dir = self.mpos_world - self.player.pos
+                    hit = self.game_map.find_nearest_wall_hit(
+                        self.player.pos, aim_dir
                     )
-                elif event.key == pygame.K_e:
-                    self.portals[1] = Portal(
-                        self.mpos_world,
-                        (self.mpos_world - self.player.pos),
-                        (41, 174, 255),
-                    )
+                    if hit:
+                        idx = 0 if event.key == pygame.K_q else 1
+                        color = (255, 127, 0) if idx == 0 else (41, 174, 255)
+                        self.portals[idx] = Portal(
+                            hit[0] + hit[1] * 2, hit[1], color
+                        )
                 elif event.key == pygame.K_z:
                     self.portals[0] = None
                 elif event.key == pygame.K_x:
@@ -154,6 +156,7 @@ class Game:
                 self.screen = pygame.Surface(self.window_size / self.screen_scale)
                 self.screen_size = glm.vec2(self.screen.get_size())
                 self.layer = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+                self.fog = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
                 self._layer_size = self.screen.get_size()
 
     def update(self) -> None:
@@ -227,7 +230,11 @@ class Game:
                 dest = self.portals[(i + 1) % 2]
                 assert dest is not None
                 entity.pos = glm.vec2(dest.exit)
-                entity.vel = glm.normalize(entity.vel + portal.normal + dest.normal)
+                # Decompose velocity into entry portal's local frame,
+                # then reconstruct in destination portal's frame
+                into = glm.dot(entity.vel, -portal.normal)
+                lateral = glm.dot(entity.vel, portal.perp)
+                entity.vel = dest.normal * into + dest.perp * lateral
                 portal.burst()
                 dest.burst()
                 volume = remap(glm.distance(self.player.pos, entity.pos), 200, 0, 0, 1)
@@ -251,17 +258,16 @@ class Game:
         self.screen.blit(self.layer, self.screen_shake)
 
         # Fog of war
+        cox, coy = cam_offset.x, cam_offset.y
+        assert self.game_map._wall_grid is not None
         vis_points = compute_visibility(
-            self.player.pos, self.game_map.walls, max_dist=200
+            self.player.pos, self.game_map._wall_grid, max_dist=200
         )
         if len(vis_points) >= 3:
-            fog = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-            fog.fill((0, 0, 0, 200))
-            screen_pts = [
-                (int(p.x - cam_offset.x), int(p.y - cam_offset.y)) for p in vis_points
-            ]
-            pygame.draw.polygon(fog, (0, 0, 0, 0), screen_pts)
-            self.screen.blit(fog, (0, 0))
+            self.fog.fill((0, 0, 0, 200))
+            screen_pts = [(int(x - cox), int(y - coy)) for x, y in vis_points]
+            pygame.draw.polygon(self.fog, (0, 0, 0, 0), screen_pts)
+            self.screen.blit(self.fog, (0, 0))
 
         pygame.transform.scale(self.screen, self.window_size, self.window)
         pygame.display.flip()
