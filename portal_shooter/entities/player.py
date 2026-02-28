@@ -8,13 +8,14 @@ from portal_shooter.particles import FadeOutParticle, ParticleEmitter
 
 
 class Player(Entity):
-    __slots__ = ["speed", "max_health", "health", "emitter"]
+    __slots__ = ["speed", "max_health", "health", "emitter", "aim_target"]
 
     def __init__(self, pos: glm.vec2, vel: glm.vec2) -> None:
         super().__init__(pos, vel)
         self.speed: int = 50
         self.max_health: int = 100
         self.health: int = 100
+        self.aim_target: glm.vec2 = glm.vec2()
 
         self.emitter: ParticleEmitter = ParticleEmitter(
             pos=self.pos,
@@ -34,10 +35,8 @@ class Player(Entity):
     def rect(self) -> pygame.Rect:
         return pygame.Rect(self.pos - glm.vec2(2), (4, 4))
 
-    def draw(  # type: ignore[override]
-        self, surface: pygame.Surface, mpos: glm.vec2, offset: glm.vec2 = glm.vec2()
-    ) -> None:
-        vec = glm.normalize(mpos - self.pos)
+    def draw(self, surface: pygame.Surface, offset: glm.vec2 = glm.vec2()) -> None:
+        vec = glm.normalize(self.aim_target - self.pos)
         p = self.pos - offset
         # draw the particles
         self.emitter.draw(surface, offset)

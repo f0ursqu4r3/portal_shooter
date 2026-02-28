@@ -37,6 +37,14 @@ def compute_visibility(
         angles.append(a - 0.001)
         angles.append(a)
         angles.append(a + 0.001)
+
+    # Add evenly-spaced fill rays to smooth polygon in large rooms
+    step = math.pi / 36  # every 5 degrees
+    a = -math.pi
+    while a < math.pi:
+        angles.append(a)
+        a += step
+
     angles.sort()
 
     # Cast rays — all math in raw floats, no glm.vec2 in inner loop

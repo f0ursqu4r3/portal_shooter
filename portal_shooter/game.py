@@ -8,6 +8,7 @@ import pygame
 from pyglm import glm
 
 from portal_shooter.entities import Bullet, Camera, Pickup, PickupKind, Player, Portal, Shell
+from portal_shooter.hud import HUD
 from portal_shooter.map import GameMap, compute_visibility
 from portal_shooter.sound import SoundPlayer
 from portal_shooter.util import get_collisions, intersect, point_dist_to_line, remap
@@ -22,6 +23,7 @@ class Game:
             self.window_size, pygame.DOUBLEBUF
         )
         pygame.display.set_caption("playground")
+        pygame.mouse.set_visible(False)
 
         self.screen_scale: float = 3
         self.screen: pygame.Surface = pygame.Surface(
@@ -59,6 +61,8 @@ class Game:
         self.shot_timer: float = 0
         self.fire_rate: float = 1 / 40
         self.speed_buff_timer: float = 0
+
+        self.hud: HUD = HUD()
 
         self.layer: pygame.Surface = pygame.Surface(
             self.screen.get_size(), pygame.SRCALPHA
@@ -266,6 +270,24 @@ class Game:
         cam_offset = self.camera.pos + self.camera.shake - self.screen_size / 2
         self.screen.fill((10, 8, 12))
         self.game_map.draw(self.screen, cam_offset)
+
+        # Compute visibility polygon
+        cox, coy = cam_offset.x, cam_offset.y
+        assert self.game_map._wall_grid is not None
+        vis_points = compute_visibility(
+            self.player.pos, self.game_map._wall_grid, max_dist=200
+        )
+
+        screen_pts: list[tuple[int, int]] = []
+        if len(vis_points) >= 3:
+            screen_pts = [(int(x - cox), int(y - coy)) for x, y in vis_points]
+
+            # Fog on map — walls visible but dimmed outside visibility
+            self.fog.fill((0, 0, 0, 200))
+            pygame.draw.polygon(self.fog, (0, 0, 0, 0), screen_pts)
+            self.screen.blit(self.fog, (0, 0))
+
+        # Draw entities onto layer
         self.layer.fill((0, 0, 0, 0))
 
         for entity in self.entities:
@@ -274,25 +296,21 @@ class Game:
         for pickup in self.pickups:
             pickup.draw(self.layer, cam_offset)
 
-        self.player.draw(self.layer, self.mpos_world, cam_offset)
+        self.player.aim_target = self.mpos_world
+        self.player.draw(self.layer, cam_offset)
 
         for portal in self.portals:
             if portal:
                 portal.draw(self.layer, cam_offset)
 
+        # Mask entities to visible area only
+        if screen_pts:
+            self.fog.fill((255, 255, 255, 0))
+            pygame.draw.polygon(self.fog, (255, 255, 255, 255), screen_pts)
+            self.layer.blit(self.fog, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+
         self.screen.blit(self.layer, (0, 0))
 
-        # Fog of war
-        cox, coy = cam_offset.x, cam_offset.y
-        assert self.game_map._wall_grid is not None
-        vis_points = compute_visibility(
-            self.player.pos, self.game_map._wall_grid, max_dist=200
-        )
-        if len(vis_points) >= 3:
-            self.fog.fill((0, 0, 0, 200))
-            screen_pts = [(int(x - cox), int(y - coy)) for x, y in vis_points]
-            pygame.draw.polygon(self.fog, (0, 0, 0, 0), screen_pts)
-            self.screen.blit(self.fog, (0, 0))
-
         pygame.transform.scale(self.screen, self.window_size, self.window)
+        self.hud.draw(self.window, self)
         pygame.display.flip()
