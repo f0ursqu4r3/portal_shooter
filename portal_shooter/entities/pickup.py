@@ -24,22 +24,50 @@ _COLORS: dict[PickupKind, tuple[int, int, int]] = {
 }
 
 _SIZE = 4  # half-size for collision rect
+PICKUP_RANGE = 16  # world-space px for F-key pickup (~2x collision rect)
+
+_NAMES: dict[PickupKind, str] = {
+    PickupKind.HEALTH: "Health",
+    PickupKind.SPEED: "Speed",
+    PickupKind.AMMO: "Ammo",
+}
+
+_WEAPON_NAMES: dict[WeaponKind, str] = {
+    WeaponKind.PISTOL: "Pistol",
+    WeaponKind.SHOTGUN: "Shotgun",
+    WeaponKind.SMG: "SMG",
+    WeaponKind.RIFLE: "Rifle",
+}
 
 
 class Pickup(Entity):
-    __slots__ = ["kind", "color", "age", "weapon_kind"]
+    __slots__ = ["kind", "color", "age", "weapon_kind", "quantity"]
 
     def __init__(
-        self, pos: glm.vec2, kind: PickupKind, weapon_kind: WeaponKind | None = None
+        self,
+        pos: glm.vec2,
+        kind: PickupKind,
+        weapon_kind: WeaponKind | None = None,
+        quantity: int = 1,
     ) -> None:
         super().__init__(pos)
         self.kind: PickupKind = kind
         self.weapon_kind: WeaponKind | None = weapon_kind
-        if kind == PickupKind.WEAPON and weapon_kind is not None:
+        if weapon_kind is not None and kind in (PickupKind.WEAPON, PickupKind.AMMO):
             self.color: tuple[int, int, int] = WEAPON_STATS[weapon_kind].color
         else:
             self.color = _COLORS[kind]
         self.age: float = 0.0
+        self.quantity: int = quantity
+
+    @property
+    def display_name(self) -> str:
+        if self.kind == PickupKind.WEAPON and self.weapon_kind is not None:
+            return _WEAPON_NAMES.get(self.weapon_kind, "Weapon")
+        if self.kind == PickupKind.AMMO and self.weapon_kind is not None:
+            wname = _WEAPON_NAMES.get(self.weapon_kind, "")
+            return f"{wname} Ammo"
+        return _NAMES.get(self.kind, "Item")
 
     @property
     def rect(self) -> pygame.Rect:

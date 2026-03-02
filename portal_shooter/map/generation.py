@@ -400,11 +400,11 @@ def generate_pickup_positions(
         else:
             roll = random.random()
             if roll < 0.4:
-                kind = "health"
+                positions.append((pos, "health", None))
             elif roll < 0.6:
-                kind = "speed"
+                positions.append((pos, "speed", None))
             else:
-                kind = "ammo"
-            positions.append((pos, kind, None))
+                ammo_type = random.choice(weapon_types)
+                positions.append((pos, "ammo", ammo_type))
 
     return positions

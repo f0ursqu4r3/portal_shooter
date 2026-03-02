@@ -17,7 +17,10 @@ from portal_shooter.entities import (
     Portal,
     Shell,
 )
+from portal_shooter.entities.pickup import PICKUP_RANGE
 from portal_shooter.hud import HUD
+from portal_shooter.inventory import Inventory, InventoryItem
+from portal_shooter.inventory_ui import InventoryUI
 from portal_shooter.map import GameMap, compute_visibility
 from portal_shooter.sound import SoundPlayer
 from portal_shooter.sound_propagation import PortalData, compute_sound
@@ -75,7 +78,7 @@ class Game:
             pk = PickupKind(kind_str)
             wk = (
                 _weapon_kind_map.get(weapon_sub or "")
-                if pk == PickupKind.WEAPON
+                if pk in (PickupKind.WEAPON, PickupKind.AMMO)
                 else None
             )
             self.pickups.append(Pickup(pos, pk, weapon_kind=wk))
@@ -93,6 +96,14 @@ class Game:
         }
 
         self.hud: HUD = HUD()
+
+        self.inventory: Inventory = Inventory()
+        self.inventory_ui: InventoryUI = InventoryUI()
+
+        self._nearest_pickup: Pickup | None = None
+        self._pickup_font: pygame.font.Font = pygame.font.Font(
+            "assets/fonts/homespun.ttf", 8
+        )
 
         self.layer: pygame.Surface = pygame.Surface(
             self.screen.get_size(), pygame.SRCALPHA
@@ -144,7 +155,7 @@ class Game:
             self.sound_player.play("Step1", volume=0.2)
             self.player_walk_timer = 0
 
-        if pygame.mouse.get_pressed()[0] and not self.shot_timer:
+        if pygame.mouse.get_pressed()[0] and not self.shot_timer and not self.inventory_ui.is_open:
             stats = WEAPON_STATS[self.current_weapon]
 
             # Check ammo
@@ -208,8 +219,17 @@ class Game:
                 event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
             ):
                 self.running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key in (pygame.K_q, pygame.K_e):
+                continue
+
+            if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+                if self.inventory_ui.handle_event(event, self):
+                    continue  # consumed by inventory
+
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_i:
+                    self.inventory_ui.toggle()
+                    pygame.mouse.set_visible(self.inventory_ui.is_open)
+                elif event.key in (pygame.K_q, pygame.K_e):
                     aim_dir = self.mpos_world - self.player.pos
                     hit = self.game_map.find_nearest_wall_hit(self.player.pos, aim_dir)
                     if hit:
@@ -221,16 +241,28 @@ class Game:
                 elif event.key == pygame.K_x:
                     self.portals[1] = None
 
+                elif event.key == pygame.K_f:
+                    if self.inventory_ui.handle_key(event.key, self):
+                        pass  # consumed by inventory UI
+                    elif self._nearest_pickup is not None:
+                        item = InventoryItem.from_pickup(self._nearest_pickup)
+                        if self.inventory.add(item):
+                            self.sound_player.play("Portal1", volume=0.5)
+                            self.pickups.remove(self._nearest_pickup)
+                            self._nearest_pickup = None
+
                 elif event.key == pygame.K_SPACE:
                     print(f"{self.player.health=} {self.clock.get_fps()=}")
 
-                elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4):
+                elif not self.inventory_ui.is_open and event.key in (
+                    pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4
+                ):
                     owned = sorted(self.owned_weapons)
                     slot = event.key - pygame.K_1
                     if slot < len(owned):
                         self.current_weapon = owned[slot]
 
-            elif event.type == pygame.MOUSEWHEEL:
+            elif event.type == pygame.MOUSEWHEEL and not self.inventory_ui.is_open:
                 owned = sorted(self.owned_weapons)
                 if len(owned) > 1:
                     idx = owned.index(self.current_weapon)
@@ -291,39 +323,17 @@ class Game:
                 portal.update(dt)
                 portal.active = all(self.portals)
 
-        collected: list[Pickup] = []
+        # Update pickups and find nearest within range
+        self._nearest_pickup = None
+        best_dist = PICKUP_RANGE + 1.0
         for pickup in self.pickups:
             pickup.update(dt)
-            if self.player.rect.colliderect(pickup.rect):
-                if pickup.kind == PickupKind.HEALTH:
-                    self.player.health = min(
-                        self.player.health + 25, self.player.max_health
-                    )
-                elif pickup.kind == PickupKind.SPEED:
-                    self.speed_buff_timer = 5.0
-                elif pickup.kind == PickupKind.WEAPON:
-                    wk = pickup.weapon_kind
-                    if wk is not None:
-                        self.owned_weapons.add(wk)
-                        wstats = WEAPON_STATS[wk]
-                        self.ammo[wk] = min(
-                            self.ammo[wk] + wstats.pickup_ammo, wstats.max_ammo
-                        )
-                else:
-                    # Ammo pickup: give 5-10 ammo for a random owned non-pistol weapon
-                    ammo_weapons = [
-                        w for w in self.owned_weapons if w != WeaponKind.PISTOL
-                    ]
-                    if not ammo_weapons:
-                        continue
-                    weapon = random.choice(ammo_weapons)
-                    wstats = WEAPON_STATS[weapon]
-                    amount = random.randint(5, 10)
-                    self.ammo[weapon] = min(self.ammo[weapon] + amount, wstats.max_ammo)
-                self.sound_player.play("Portal1", volume=0.5)
-                collected.append(pickup)
-        if collected:
-            self.pickups = [p for p in self.pickups if p not in collected]
+            dx = pickup.pos.x - self.player.pos.x
+            dy = pickup.pos.y - self.player.pos.y
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist < best_dist:
+                best_dist = dist
+                self._nearest_pickup = pickup
 
         if self.speed_buff_timer > 0:
             self.speed_buff_timer = max(0, self.speed_buff_timer - dt)
@@ -426,6 +436,9 @@ class Game:
         for pickup in self.pickups:
             pickup.draw(self.layer, cam_offset)
 
+        if self._nearest_pickup is not None:
+            self._draw_pickup_tooltip(self.layer, self._nearest_pickup, cam_offset)
+
         self.player.aim_target = self.mpos_world
         self.player.draw(self.layer, cam_offset)
 
@@ -443,4 +456,24 @@ class Game:
 
         pygame.transform.scale(self.screen, self.window_size, self.window)
         self.hud.draw(self.window, self)
+        self.inventory_ui.draw(self.window, self)
         pygame.display.flip()
+
+    def _draw_pickup_tooltip(
+        self, surface: pygame.Surface, pickup: Pickup, cam_offset: glm.vec2
+    ) -> None:
+        bob = math.sin(pickup.age * 3) * 2
+        screen_pos = pickup.pos - cam_offset + glm.vec2(0, bob)
+
+        label = f"F: {pickup.display_name}"
+        if pickup.quantity > 1:
+            label += f" x{pickup.quantity}"
+        text_surf = self._pickup_font.render(label, False, (220, 220, 220))
+        tw, th = text_surf.get_size()
+        pad = 2
+        bx = int(screen_pos.x) - (tw + pad * 2) // 2
+        by = int(screen_pos.y) - th - pad * 2 - 8
+
+        bg_rect = pygame.Rect(bx, by, tw + pad * 2, th + pad * 2)
+        pygame.draw.rect(surface, (10, 8, 12, 180), bg_rect)
+        surface.blit(text_surf, (bx + pad, by + pad))

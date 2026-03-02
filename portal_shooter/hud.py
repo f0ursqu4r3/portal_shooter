@@ -276,6 +276,8 @@ class HUD:
             pygame.draw.circle(window, (41, 174, 255), (bx, by), 2)
 
     def _draw_crosshair(self, window: pygame.Surface) -> None:
+        if pygame.mouse.get_visible():
+            return
         mx, my = pygame.mouse.get_pos()
         color = (150, 150, 150)
         gap = 3
