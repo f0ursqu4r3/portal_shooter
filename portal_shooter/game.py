@@ -341,18 +341,22 @@ class Game:
         portal_data: tuple[PortalData, PortalData] | None = None
         p0, p1 = self.portals[0], self.portals[1]
         if p0 is not None and p1 is not None:
+            # Portal.pos is already offset normal*2 from the wall surface.
+            # PortalData.pos = wall surface, exit = portal.pos (just off wall).
+            n0x, n0y = float(p0.normal.x), float(p0.normal.y)
+            n1x, n1y = float(p1.normal.x), float(p1.normal.y)
             portal_data = (
                 PortalData(
+                    float(p0.pos.x) - n0x * 2, float(p0.pos.y) - n0y * 2,
+                    n0x, n0y,
                     float(p0.pos.x), float(p0.pos.y),
-                    float(p0.normal.x), float(p0.normal.y),
-                    float(p0.exit.x), float(p0.exit.y),
                     float(p0.line[0].x), float(p0.line[0].y),
                     float(p0.line[1].x), float(p0.line[1].y),
                 ),
                 PortalData(
+                    float(p1.pos.x) - n1x * 2, float(p1.pos.y) - n1y * 2,
+                    n1x, n1y,
                     float(p1.pos.x), float(p1.pos.y),
-                    float(p1.normal.x), float(p1.normal.y),
-                    float(p1.exit.x), float(p1.exit.y),
                     float(p1.line[0].x), float(p1.line[0].y),
                     float(p1.line[1].x), float(p1.line[1].y),
                 ),
