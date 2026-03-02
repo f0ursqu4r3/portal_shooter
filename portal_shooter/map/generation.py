@@ -13,13 +13,13 @@ from portal_shooter.map.types import BSPNode, Room, Wall
 
 def split(node: BSPNode, depth: int) -> None:
     """Recursively split a BSP node into left/right children."""
-    min_size = 100
+    min_size = 60
     if node.rect.width < min_size * 2 and node.rect.height < min_size * 2:
         return
-    if depth > 5:
+    if depth > 7:
         return
-    # 40% early-stop at depth 3+ — preserves large leaves
-    if depth >= 3 and random.random() < 0.4:
+    # 20% early-stop at depth 4+
+    if depth >= 4 and random.random() < 0.2:
         return
 
     # Choose split axis — prefer splitting the longer dimension
@@ -81,14 +81,14 @@ def create_rooms(node: BSPNode) -> list[Room]:
     # Leaf node — carve a rectilinear room (rectangle, possibly L-shaped)
     r = node.rect
 
-    # Pick archetype for sizing: Large 70%, Medium 20%, Small 10%
+    # Pick archetype for sizing: Large 20%, Medium 50%, Small 30%
     roll = random.random()
-    if roll < 0.7:
-        margin_frac_min, margin_frac_max = 0.03, 0.08
-    elif roll < 0.9:
-        margin_frac_min, margin_frac_max = 0.08, 0.18
+    if roll < 0.2:
+        margin_frac_min, margin_frac_max = 0.05, 0.12
+    elif roll < 0.7:
+        margin_frac_min, margin_frac_max = 0.12, 0.22
     else:
-        margin_frac_min, margin_frac_max = 0.18, 0.35
+        margin_frac_min, margin_frac_max = 0.22, 0.38
 
     # Derive rectangle bounds within the BSP cell
     mx = random.uniform(margin_frac_min, margin_frac_max) * r.width
@@ -203,6 +203,57 @@ def connect(node: BSPNode) -> list[list[glm.vec2]]:
     return corridors
 
 
+def add_extra_connections(
+    rooms: list[Room], existing: list[list[glm.vec2]]
+) -> list[list[glm.vec2]]:
+    """Add extra corridors between nearby rooms for alternate traversal paths.
+
+    Pairs rooms by distance and connects close neighbours that aren't already
+    linked by the BSP spanning-tree corridors, creating loops.
+    """
+    if len(rooms) < 3:
+        return []
+
+    # Build set of already-connected room index pairs (approximate: two rooms
+    # are "connected" if an existing corridor midpoint is close to both centers)
+    connected: set[tuple[int, int]] = set()
+    for corr in existing:
+        mid = (corr[0] + corr[2]) * 0.5  # midpoint of quad diagonal
+        # Find the two closest rooms to this corridor midpoint
+        dists = [(glm.distance(mid, r.center), idx) for idx, r in enumerate(rooms)]
+        dists.sort()
+        if len(dists) >= 2:
+            a, b = dists[0][1], dists[1][1]
+            connected.add((min(a, b), max(a, b)))
+
+    # Score all room pairs by distance
+    pairs: list[tuple[float, int, int]] = []
+    for i in range(len(rooms)):
+        for j in range(i + 1, len(rooms)):
+            d = glm.distance(rooms[i].center, rooms[j].center)
+            pairs.append((d, i, j))
+    pairs.sort()
+
+    extras: list[list[glm.vec2]] = []
+    max_extras = max(2, len(rooms) // 3)
+
+    for dist, i, j in pairs:
+        if len(extras) >= max_extras:
+            break
+        key = (min(i, j), max(i, j))
+        if key in connected:
+            continue
+        # 60% chance to add this shortcut
+        if random.random() > 0.6:
+            continue
+        corridor = make_corridor(rooms[i], rooms[j])
+        if corridor is not None:
+            extras.append(corridor)
+            connected.add(key)
+
+    return extras
+
+
 def make_corridor(room_a: Room, room_b: Room) -> list[glm.vec2] | None:
     """Connect two rooms with a single wide doorway (direct line)."""
     a = room_a.center
@@ -284,7 +335,7 @@ def add_pillars(rooms: list[Room]) -> list[Wall]:
     margin = 20
     for room in rooms:
         area = room.bounds.width * room.bounds.height
-        if area < 15000:
+        if area < 8000:
             continue
         n_pillars = random.randint(1, 4)
         b = room.bounds
@@ -333,7 +384,7 @@ def generate_pickup_positions(
     None otherwise.
     """
     qualifying = [
-        r for r in rooms[1:] if r.bounds.width * r.bounds.height >= 5000
+        r for r in rooms[1:] if r.bounds.width * r.bounds.height >= 2000
     ]
     random.shuffle(qualifying)
 

@@ -13,6 +13,7 @@ from portal_shooter.map.collision import (
 )
 from portal_shooter.map.generation import (
     add_boundary_walls,
+    add_extra_connections,
     add_pillars,
     collect_walls,
     connect,
@@ -62,6 +63,7 @@ class GameMap:
         split(root, 0)
         self.rooms = create_rooms(root)
         self.corridors = connect(root)
+        self.corridors.extend(add_extra_connections(self.rooms, self.corridors))
         self.walls = collect_walls(self.rooms, self.corridors)
         self.walls.extend(add_pillars(self.rooms))
         self.walls.extend(add_boundary_walls(self.width, self.height))
