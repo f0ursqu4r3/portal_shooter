@@ -7,12 +7,14 @@ import pygame
 from pyglm import glm
 
 from portal_shooter.entities.entity import Entity
+from portal_shooter.weapons import WEAPON_STATS, WeaponKind
 
 
 class PickupKind(enum.Enum):
     HEALTH = "health"
     SPEED = "speed"
     AMMO = "ammo"
+    WEAPON = "weapon"
 
 
 _COLORS: dict[PickupKind, tuple[int, int, int]] = {
@@ -25,12 +27,18 @@ _SIZE = 4  # half-size for collision rect
 
 
 class Pickup(Entity):
-    __slots__ = ["kind", "color", "age"]
+    __slots__ = ["kind", "color", "age", "weapon_kind"]
 
-    def __init__(self, pos: glm.vec2, kind: PickupKind) -> None:
+    def __init__(
+        self, pos: glm.vec2, kind: PickupKind, weapon_kind: WeaponKind | None = None
+    ) -> None:
         super().__init__(pos)
         self.kind: PickupKind = kind
-        self.color: tuple[int, int, int] = _COLORS[kind]
+        self.weapon_kind: WeaponKind | None = weapon_kind
+        if kind == PickupKind.WEAPON and weapon_kind is not None:
+            self.color: tuple[int, int, int] = WEAPON_STATS[weapon_kind].color
+        else:
+            self.color = _COLORS[kind]
         self.age: float = 0.0
 
     @property
@@ -57,8 +65,12 @@ class Pickup(Entity):
                 (p.x - 3, p.y),
             ]
             pygame.draw.polygon(surface, self.color, pts, 1)
-        else:
+        elif self.kind == PickupKind.AMMO:
             # Ammo: small square
             pygame.draw.rect(
                 surface, self.color, (p.x - 2, p.y - 2, 5, 5), 1
             )
+        else:
+            # Weapon: small gun silhouette (horizontal barrel + grip)
+            pygame.draw.line(surface, self.color, (p.x - 4, p.y), (p.x + 4, p.y), 1)
+            pygame.draw.line(surface, self.color, (p.x + 1, p.y), (p.x + 1, p.y + 3), 1)

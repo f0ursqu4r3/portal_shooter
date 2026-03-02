@@ -27,9 +27,9 @@ class HUD:
         "_minimap_size",
         "_timer",
         "_weapon_labels",
-        "_cached_ammo_text",
-        "_cached_ammo_val",
-        "_cached_ammo_weapon",
+        "_weapon_labels_dim",
+        "_weapon_abbrevs",
+        "_select_indicator",
     ]
 
     def __init__(self) -> None:
@@ -61,7 +61,7 @@ class HUD:
         self._timer: float = 0
 
         # Weapon HUD
-        _abbrevs: dict[WeaponKind, str] = {
+        self._weapon_abbrevs: dict[WeaponKind, str] = {
             WeaponKind.PISTOL: "PST",
             WeaponKind.SHOTGUN: "SHG",
             WeaponKind.SMG: "SMG",
@@ -71,11 +71,19 @@ class HUD:
             kind: self._font_sm.render(
                 abbr, False, WEAPON_STATS[kind].color
             )
-            for kind, abbr in _abbrevs.items()
+            for kind, abbr in self._weapon_abbrevs.items()
         }
-        self._cached_ammo_text: pygame.Surface | None = None
-        self._cached_ammo_val: int = -1
-        self._cached_ammo_weapon: WeaponKind = WeaponKind.PISTOL
+        self._weapon_labels_dim: dict[WeaponKind, pygame.Surface] = {
+            kind: self._font_sm.render(
+                abbr,
+                False,
+                tuple(c // 3 for c in WEAPON_STATS[kind].color),  # type: ignore[arg-type]
+            )
+            for kind, abbr in self._weapon_abbrevs.items()
+        }
+        self._select_indicator: pygame.Surface = self._font_sm.render(
+            ">", False, (200, 200, 200)
+        )
 
     def bake_minimap(self, game: Game) -> None:
         """Pre-render static minimap geometry (rooms + corridors)."""
@@ -168,28 +176,48 @@ class HUD:
         window.blit(countdown, (bar_x + bar_w + 6, y))
 
     def _draw_weapon(self, window: pygame.Surface, game: Game) -> None:
-        x, y = 8, 670
-        weapon = game.current_weapon
-        label = self._weapon_labels[weapon]
-        window.blit(label, (x, y))
+        owned = sorted(game.owned_weapons)
+        n = len(owned)
+        row_h = 20
+        list_bottom = 685  # 7px gap above portal indicators at y=692
 
-        # Ammo count
-        stats = WEAPON_STATS[weapon]
-        if stats.ammo_per_shot == 0:
-            ammo_str = "\u221e"
-            ammo_val = -2  # sentinel for infinity
-        else:
-            ammo_val = game.ammo[weapon]
-            ammo_str = str(ammo_val)
+        # Anchor index: current weapon sits at index 1 (or 0 if only 1 weapon)
+        anchor = min(1, n - 1)
+        cur_idx = owned.index(game.current_weapon) if game.current_weapon in owned else 0
 
-        if ammo_val != self._cached_ammo_val or weapon != self._cached_ammo_weapon:
-            self._cached_ammo_val = ammo_val
-            self._cached_ammo_weapon = weapon
-            self._cached_ammo_text = self._font_sm.render(
-                ammo_str, False, (200, 200, 200)
-            )
-        assert self._cached_ammo_text is not None
-        window.blit(self._cached_ammo_text, (x + label.get_width() + 6, y))
+        # Rotate list so current weapon is at the anchor position
+        rotation = cur_idx - anchor
+        rotated: list[WeaponKind] = []
+        for i in range(n):
+            rotated.append(owned[(i + rotation) % n])
+
+        x = 8
+        top_y = list_bottom - n * row_h
+
+        for i, wk in enumerate(rotated):
+            y = top_y + i * row_h
+            is_selected = wk == game.current_weapon
+
+            if is_selected:
+                window.blit(self._select_indicator, (x, y))
+                label = self._weapon_labels[wk]
+                ammo_color = (200, 200, 200)
+            else:
+                label = self._weapon_labels_dim[wk]
+                ammo_color = (100, 100, 100)
+
+            label_x = x + 14
+            window.blit(label, (label_x, y))
+
+            # Ammo text
+            stats = WEAPON_STATS[wk]
+            if stats.ammo_per_shot == 0:
+                ammo_str = "\u221e"
+            else:
+                ammo_str = str(game.ammo[wk])
+
+            ammo_surf = self._font_sm.render(ammo_str, False, ammo_color)
+            window.blit(ammo_surf, (label_x + label.get_width() + 6, y))
 
     def _draw_portal_indicators(self, window: pygame.Surface, game: Game) -> None:
         y = 692

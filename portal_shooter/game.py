@@ -62,10 +62,22 @@ class Game:
 
         self.portals: list[Portal | None] = [None, None]
 
-        self.pickups: list[Pickup] = [
-            Pickup(pos, PickupKind(kind))
-            for pos, kind in self.game_map.pickup_positions
-        ]
+        self.owned_weapons: set[WeaponKind] = {WeaponKind.PISTOL}
+
+        _weapon_kind_map: dict[str, WeaponKind] = {
+            "shotgun": WeaponKind.SHOTGUN,
+            "smg": WeaponKind.SMG,
+            "rifle": WeaponKind.RIFLE,
+        }
+        self.pickups: list[Pickup] = []
+        for pos, kind_str, weapon_sub in self.game_map.pickup_positions:
+            pk = PickupKind(kind_str)
+            wk = (
+                _weapon_kind_map.get(weapon_sub or "")
+                if pk == PickupKind.WEAPON
+                else None
+            )
+            self.pickups.append(Pickup(pos, pk, weapon_kind=wk))
 
         self.time_scale: float = 1
         self.shot_timer: float = 0
@@ -135,15 +147,20 @@ class Game:
             stats = WEAPON_STATS[self.current_weapon]
 
             # Check ammo
-            if stats.ammo_per_shot and self.ammo[self.current_weapon] < stats.ammo_per_shot:
+            if (
+                stats.ammo_per_shot
+                and self.ammo[self.current_weapon] < stats.ammo_per_shot
+            ):
                 pass  # No ammo — don't fire
             else:
                 fire_vec = glm.normalize(self.mpos_world - self.player.pos)
 
                 for _ in range(stats.pellets):
-                    spread_offset = random.uniform(
-                        -stats.spread / 2, stats.spread / 2
-                    ) if stats.spread else 0.0
+                    spread_offset = (
+                        random.uniform(-stats.spread / 2, stats.spread / 2)
+                        if stats.spread
+                        else 0.0
+                    )
                     angle = math.atan2(fire_vec.y, fire_vec.x) + spread_offset
                     pellet_dir = glm.vec2(math.cos(angle), math.sin(angle))
                     bullet = Bullet(
@@ -176,7 +193,11 @@ class Game:
 
                 self.camera.shake = glm.vec2(shake)
 
-                rate = stats.fire_rate / 2 if self.speed_buff_timer > 0 else stats.fire_rate
+                rate = (
+                    stats.fire_rate / 2
+                    if self.speed_buff_timer > 0
+                    else stats.fire_rate
+                )
                 self.shot_timer = rate
                 self.time_scale = 0.2
 
@@ -202,20 +223,18 @@ class Game:
                 elif event.key == pygame.K_SPACE:
                     print(f"{self.player.health=} {self.clock.get_fps()=}")
 
-                elif event.key == pygame.K_1:
-                    self.current_weapon = WeaponKind.PISTOL
-                elif event.key == pygame.K_2:
-                    self.current_weapon = WeaponKind.SHOTGUN
-                elif event.key == pygame.K_3:
-                    self.current_weapon = WeaponKind.SMG
-                elif event.key == pygame.K_4:
-                    self.current_weapon = WeaponKind.RIFLE
+                elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4):
+                    owned = sorted(self.owned_weapons)
+                    slot = event.key - pygame.K_1
+                    if slot < len(owned):
+                        self.current_weapon = owned[slot]
 
             elif event.type == pygame.MOUSEWHEEL:
-                weapons = list(WeaponKind)
-                idx = weapons.index(self.current_weapon)
-                idx = (idx + event.y) % len(weapons)
-                self.current_weapon = weapons[idx]
+                owned = sorted(self.owned_weapons)
+                if len(owned) > 1:
+                    idx = owned.index(self.current_weapon)
+                    idx = (idx + event.y) % len(owned)
+                    self.current_weapon = owned[idx]
 
     def update(self) -> None:
         tdt = min(self.clock.tick() * 0.001, 0.05)
@@ -283,19 +302,25 @@ class Game:
                     )
                 elif pickup.kind == PickupKind.SPEED:
                     self.speed_buff_timer = 5.0
+                elif pickup.kind == PickupKind.WEAPON:
+                    wk = pickup.weapon_kind
+                    if wk is not None:
+                        self.owned_weapons.add(wk)
+                        wstats = WEAPON_STATS[wk]
+                        self.ammo[wk] = min(
+                            self.ammo[wk] + wstats.pickup_ammo, wstats.max_ammo
+                        )
                 else:
-                    # Ammo pickup: give 5-10 ammo for a random non-pistol weapon
+                    # Ammo pickup: give 5-10 ammo for a random owned non-pistol weapon
                     ammo_weapons = [
-                        WeaponKind.SHOTGUN,
-                        WeaponKind.SMG,
-                        WeaponKind.RIFLE,
+                        w for w in self.owned_weapons if w != WeaponKind.PISTOL
                     ]
+                    if not ammo_weapons:
+                        continue
                     weapon = random.choice(ammo_weapons)
                     wstats = WEAPON_STATS[weapon]
                     amount = random.randint(5, 10)
-                    self.ammo[weapon] = min(
-                        self.ammo[weapon] + amount, wstats.max_ammo
-                    )
+                    self.ammo[weapon] = min(self.ammo[weapon] + amount, wstats.max_ammo)
                 self.sound_player.play("Portal1", volume=0.5)
                 collected.append(pickup)
         if collected:

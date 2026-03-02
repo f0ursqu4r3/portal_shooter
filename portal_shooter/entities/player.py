@@ -42,8 +42,6 @@ class Player(Entity):
         self.emitter.draw(surface, offset)
 
         # draw the "gun"
-        pygame.draw.line(
-            surface, (0, 200, 200), p + vec * 4, p + vec * 10, 1
-        )
+        pygame.draw.line(surface, (0, 200, 200), p + vec * 4, p + vec * 10, 1)
         # draw the player
         pygame.draw.circle(surface, (0, 200, 0), p, 2)

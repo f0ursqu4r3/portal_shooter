@@ -51,7 +51,7 @@ class GameMap:
         self.walls: list[Wall] = []
         self.bounds: glm.vec2 = glm.vec2(width, height)
         self.spawn_pos: glm.vec2 = glm.vec2(width / 2, height / 2)
-        self.pickup_positions: list[tuple[glm.vec2, str]] = []
+        self.pickup_positions: list[tuple[glm.vec2, str, str | None]] = []
         self._floor_surface: pygame.Surface | None = None
         self._wall_grid: WallGrid | None = None
 

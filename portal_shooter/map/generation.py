@@ -323,24 +323,37 @@ def add_boundary_walls(width: int, height: int) -> list[Wall]:
     return [(corners[i], corners[(i + 1) % 4]) for i in range(4)]
 
 
-def generate_pickup_positions(rooms: list[Room]) -> list[tuple[glm.vec2, str]]:
+def generate_pickup_positions(
+    rooms: list[Room],
+) -> list[tuple[glm.vec2, str, str | None]]:
     """Generate pickup positions, one per qualifying room (skipping room 0).
 
-    Returns list of (position, kind_str) tuples where kind_str is
-    "health", "speed", or "ammo".
+    Returns list of (position, kind_str, weapon_sub_type) tuples.
+    weapon_sub_type is a WeaponKind name (e.g. "shotgun") for weapon pickups,
+    None otherwise.
     """
-    positions: list[tuple[glm.vec2, str]] = []
-    for room in rooms[1:]:
-        if room.bounds.width * room.bounds.height < 5000:
-            continue
+    qualifying = [
+        r for r in rooms[1:] if r.bounds.width * r.bounds.height >= 5000
+    ]
+    random.shuffle(qualifying)
+
+    weapon_types = ["shotgun", "smg", "rifle"]
+    positions: list[tuple[glm.vec2, str, str | None]] = []
+
+    for i, room in enumerate(qualifying):
         offset = glm.vec2(random.uniform(-10, 10), random.uniform(-10, 10))
         pos = room.center + offset
-        roll = random.random()
-        if roll < 0.4:
-            kind = "health"
-        elif roll < 0.6:
-            kind = "speed"
+
+        if i < len(weapon_types):
+            positions.append((pos, "weapon", weapon_types[i]))
         else:
-            kind = "ammo"
-        positions.append((pos, kind))
+            roll = random.random()
+            if roll < 0.4:
+                kind = "health"
+            elif roll < 0.6:
+                kind = "speed"
+            else:
+                kind = "ammo"
+            positions.append((pos, kind, None))
+
     return positions

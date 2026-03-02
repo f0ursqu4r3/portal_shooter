@@ -24,6 +24,7 @@ class WeaponStats:
     pellets: int
     piercing: bool
     color: tuple[int, int, int]
+    pickup_ammo: int = 0
 
 
 WEAPON_STATS: dict[WeaponKind, WeaponStats] = {
@@ -50,6 +51,7 @@ WEAPON_STATS: dict[WeaponKind, WeaponStats] = {
         pellets=5,
         piercing=False,
         color=(220, 160, 60),
+        pickup_ammo=8,
     ),
     WeaponKind.SMG: WeaponStats(
         fire_rate=1 / 40,
@@ -62,6 +64,7 @@ WEAPON_STATS: dict[WeaponKind, WeaponStats] = {
         pellets=1,
         piercing=False,
         color=(100, 100, 100),
+        pickup_ammo=30,
     ),
     WeaponKind.RIFLE: WeaponStats(
         fire_rate=1 / 1.5,
@@ -74,5 +77,6 @@ WEAPON_STATS: dict[WeaponKind, WeaponStats] = {
         pellets=1,
         piercing=True,
         color=(100, 180, 255),
+        pickup_ammo=5,
     ),
 }
