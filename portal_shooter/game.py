@@ -20,7 +20,8 @@ from portal_shooter.entities import (
 from portal_shooter.hud import HUD
 from portal_shooter.map import GameMap, compute_visibility
 from portal_shooter.sound import SoundPlayer
-from portal_shooter.util import get_collisions, intersect, point_dist_to_line, remap
+from portal_shooter.sound_propagation import PortalData, compute_sound
+from portal_shooter.util import get_collisions, intersect, point_dist_to_line
 from portal_shooter.weapons import WEAPON_STATS, WeaponKind
 
 pygame.init()
@@ -264,9 +265,7 @@ class Game:
                 continue
 
             if self.game_map.collide_entity(entity, old_pos):
-                volume = remap(glm.distance(self.player.pos, entity.pos), 200, 0, 0, 1)
-                if volume:
-                    self.sound_player.play("Ricochet1", volume=volume)
+                self.play_spatial("Ricochet1", float(entity.pos.x), float(entity.pos.y))
 
             self.do_portal(entity)
 
@@ -329,6 +328,48 @@ class Game:
         if self.speed_buff_timer > 0:
             self.speed_buff_timer = max(0, self.speed_buff_timer - dt)
 
+    def play_spatial(
+        self, sound_name: str, source_x: float, source_y: float, base_volume: float = 1.0
+    ) -> None:
+        aim = self.mpos_world - self.player.pos
+        mag = float((aim.x**2 + aim.y**2) ** 0.5)
+        if mag < 1e-10:
+            fx, fy = 1.0, 0.0
+        else:
+            fx, fy = float(aim.x) / mag, float(aim.y) / mag
+
+        portal_data: tuple[PortalData, PortalData] | None = None
+        p0, p1 = self.portals[0], self.portals[1]
+        if p0 is not None and p1 is not None:
+            portal_data = (
+                PortalData(
+                    float(p0.pos.x), float(p0.pos.y),
+                    float(p0.normal.x), float(p0.normal.y),
+                    float(p0.exit.x), float(p0.exit.y),
+                    float(p0.line[0].x), float(p0.line[0].y),
+                    float(p0.line[1].x), float(p0.line[1].y),
+                ),
+                PortalData(
+                    float(p1.pos.x), float(p1.pos.y),
+                    float(p1.normal.x), float(p1.normal.y),
+                    float(p1.exit.x), float(p1.exit.y),
+                    float(p1.line[0].x), float(p1.line[0].y),
+                    float(p1.line[1].x), float(p1.line[1].y),
+                ),
+            )
+
+        assert self.game_map._wall_grid is not None
+        volume, pan = compute_sound(
+            float(self.player.pos.x), float(self.player.pos.y),
+            fx, fy,
+            source_x, source_y,
+            self.game_map._wall_grid,
+            portal_data,
+        )
+        final_vol = volume * base_volume
+        if final_vol > 0.01:
+            self.sound_player.play(sound_name, volume=final_vol, pan=pan)
+
     def do_portal(self, entity: Player | Bullet | Shell) -> None:
         if not (all(self.portals) and entity.vel):
             return
@@ -349,8 +390,7 @@ class Game:
                 entity.vel = dest.normal * into + dest.perp * lateral
                 portal.burst()
                 dest.burst()
-                volume = remap(glm.distance(self.player.pos, entity.pos), 200, 0, 0, 1)
-                self.sound_player.play("Portal1", volume=volume)
+                self.play_spatial("Portal1", float(entity.pos.x), float(entity.pos.y))
 
     def draw(self) -> None:
         cam_offset = self.camera.pos + self.camera.shake - self.screen_size / 2

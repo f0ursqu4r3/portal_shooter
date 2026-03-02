@@ -18,8 +18,10 @@ class SoundPlayer:
             self.cache[file_name.stem] = pygame.mixer.Sound(str(file_name))
         self.sounds: list[pygame.mixer.Sound] = []
 
-    def play(self, sound_name: str, volume: float = 1) -> None:
+    def play(self, sound_name: str, volume: float = 1, pan: float = 0.0) -> None:
         sound = self.cache[sound_name]
         channel = sound.play()
         if channel:
-            channel.set_volume(volume, volume)
+            left = volume * min(1.0, 1.0 - pan)
+            right = volume * min(1.0, 1.0 + pan)
+            channel.set_volume(left, right)
