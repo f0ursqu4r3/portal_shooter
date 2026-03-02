@@ -17,12 +17,16 @@ class HUD:
         "_font_md",
         "_label_hp",
         "_label_spd",
+        "_label_ar",
         "_label_q",
         "_label_e",
+        "_label_floor",
         "_cached_hp_text",
         "_cached_hp_val",
         "_cached_fps_text",
         "_cached_fps_val",
+        "_cached_floor_text",
+        "_cached_floor_val",
         "_minimap_bg",
         "_minimap_size",
         "_timer",
@@ -43,11 +47,17 @@ class HUD:
         self._label_spd: pygame.Surface = self._font_sm.render(
             "SPD", False, (220, 200, 40)
         )
+        self._label_ar: pygame.Surface = self._font_sm.render(
+            "AR", False, (100, 140, 200)
+        )
         self._label_q: pygame.Surface = self._font_sm.render(
             "Q:", False, (200, 200, 200)
         )
         self._label_e: pygame.Surface = self._font_sm.render(
             "E:", False, (200, 200, 200)
+        )
+        self._label_floor: pygame.Surface = self._font_sm.render(
+            "FL", False, (180, 180, 180)
         )
 
         # Cached numeric surfaces
@@ -55,6 +65,8 @@ class HUD:
         self._cached_hp_val: int = -1
         self._cached_fps_text: pygame.Surface | None = None
         self._cached_fps_val: int = -1
+        self._cached_floor_text: pygame.Surface | None = None
+        self._cached_floor_val: int = -1
 
         self._minimap_bg: pygame.Surface | None = None
         self._minimap_size: int = 120
@@ -113,7 +125,10 @@ class HUD:
         self._timer += dt
 
         self._draw_health(window, game)
+        self._draw_armor(window, game)
+        self._draw_dash_cooldown(window, game)
         self._draw_speed_buff(window, game)
+        self._draw_floor(window, game)
         self._draw_weapon(window, game)
         self._draw_portal_indicators(window, game)
         self._draw_minimap(window, game)
@@ -147,6 +162,62 @@ class HUD:
             )
         assert self._cached_hp_text is not None
         window.blit(self._cached_hp_text, (bar_x + bar_w + 6, y))
+
+    def _draw_armor(self, window: pygame.Surface, game: Game) -> None:
+        if game.player.armor <= 0:
+            return
+        x, y = 8, 24
+        window.blit(self._label_ar, (x, y))
+
+        bar_x = x + 28
+        bar_w, bar_h = 100, 6
+        bar_y = y + 5
+        pygame.draw.rect(window, (20, 30, 50), (bar_x, bar_y, bar_w, bar_h))
+        fill_w = max(0, int(bar_w * game.player.armor / game.player.max_armor))
+        if fill_w > 0:
+            pygame.draw.rect(window, (80, 120, 200), (bar_x, bar_y, fill_w, bar_h))
+        pygame.draw.rect(window, (50, 70, 100), (bar_x, bar_y, bar_w, bar_h), 1)
+
+    def _draw_dash_cooldown(self, window: pygame.Surface, game: Game) -> None:
+        x, y = 140, 8
+        bar_w, bar_h = 30, 4
+        bar_y = y + 6
+        # Show as a small bar that fills up as cooldown expires
+        if game.player.is_dashing:
+            pct = 1.0
+            color = (200, 200, 255)
+        elif game.player.dash_cooldown > 0:
+            from portal_shooter.entities.player import DASH_COOLDOWN
+            pct = 1.0 - game.player.dash_cooldown / DASH_COOLDOWN
+            color = (80, 80, 90)
+        else:
+            pct = 1.0
+            color = (120, 120, 130)
+        pygame.draw.rect(window, (30, 30, 35), (x, bar_y, bar_w, bar_h))
+        fill_w = max(0, int(bar_w * pct))
+        if fill_w > 0:
+            pygame.draw.rect(window, color, (x, bar_y, fill_w, bar_h))
+
+    def _draw_floor(self, window: pygame.Surface, game: Game) -> None:
+        if not hasattr(game, "level"):
+            return
+        floor = game.level.floor
+        # Top center
+        cx = window.get_width() // 2
+
+        if floor != self._cached_floor_val:
+            self._cached_floor_val = floor
+            self._cached_floor_text = self._font_sm.render(
+                f"FL {floor}", False, (180, 180, 180)
+            )
+        assert self._cached_floor_text is not None
+        fw = self._cached_floor_text.get_width()
+        window.blit(self._cached_floor_text, (cx - fw // 2, 8))
+
+        # Key indicator
+        if game.level.has_key:
+            key_surf = self._font_sm.render("KEY", False, (255, 200, 50))
+            window.blit(key_surf, (cx - key_surf.get_width() // 2, 26))
 
     def _draw_speed_buff(self, window: pygame.Surface, game: Game) -> None:
         if game.speed_buff_timer <= 0:
@@ -264,6 +335,21 @@ class HUD:
         px = mx + int(game.player.pos.x * sx)
         py = my + int(game.player.pos.y * sy)
         pygame.draw.circle(window, (0, 200, 0), (px, py), 2)
+
+        # Enemy dots
+        if hasattr(game, "enemies"):
+            for enemy in game.enemies:
+                if enemy.alive:
+                    ex = mx + int(enemy.pos.x * sx)
+                    ey = my + int(enemy.pos.y * sy)
+                    pygame.draw.circle(window, (200, 50, 50), (ex, ey), 1)
+
+        # Exit door dot
+        if hasattr(game, "exit_door") and game.exit_door is not None:
+            dx = mx + int(game.exit_door.pos.x * sx)
+            dy = my + int(game.exit_door.pos.y * sy)
+            door_color = (60, 220, 80) if game.exit_door.active else (70, 70, 75)
+            pygame.draw.circle(window, door_color, (dx, dy), 2)
 
         # Portal dots
         if game.portals[0]:

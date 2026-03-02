@@ -7,6 +7,7 @@ from pyglm import glm
 
 from portal_shooter.map.collision import (
     collide_entity as _collide_entity,
+    collide_grenade as _collide_grenade,
     collide_player as _collide_player,
     find_nearest_wall_hit as _find_nearest_wall_hit,
     get_wall_vertices as _get_wall_vertices,
@@ -21,12 +22,14 @@ from portal_shooter.map.generation import (
     generate_pickup_positions,
     split,
 )
+from portal_shooter.map.pathfinding import RoomGraph
 from portal_shooter.map.spatial_grid import WallGrid
 from portal_shooter.map.types import FLOOR_COLOR, VOID_COLOR, WALL_COLOR, BSPNode, Room, Wall
 
 if TYPE_CHECKING:
     from portal_shooter.entities.bullet import Bullet
-    from portal_shooter.entities.player import Player
+    from portal_shooter.entities.entity import Entity
+    from portal_shooter.entities.grenade import Grenade
     from portal_shooter.entities.shell import Shell
 
 
@@ -40,6 +43,7 @@ class GameMap:
         "bounds",
         "spawn_pos",
         "pickup_positions",
+        "room_graph",
         "_floor_surface",
         "_wall_grid",
     ]
@@ -55,6 +59,7 @@ class GameMap:
         self.pickup_positions: list[tuple[glm.vec2, str, str | None]] = []
         self._floor_surface: pygame.Surface | None = None
         self._wall_grid: WallGrid | None = None
+        self.room_graph: RoomGraph | None = None
 
         self._generate()
 
@@ -71,6 +76,7 @@ class GameMap:
         if self.rooms:
             self.spawn_pos = glm.vec2(self.rooms[0].center)
             self.pickup_positions = generate_pickup_positions(self.rooms)
+        self.room_graph = RoomGraph(self.rooms, self.corridors)
         self._bake_floor_surface()
 
     def _bake_floor_surface(self) -> None:
@@ -118,13 +124,17 @@ class GameMap:
             sp2 = p2 - cam_offset
             pygame.draw.line(surface, WALL_COLOR, sp1, sp2, 1)
 
-    def collide_player(self, player: Player, old_pos: glm.vec2) -> None:
+    def collide_player(self, entity: Entity, old_pos: glm.vec2, radius: float = 3.0) -> None:
         assert self._wall_grid is not None
-        _collide_player(player, old_pos, self._wall_grid)
+        _collide_player(entity, old_pos, self._wall_grid, radius)
 
     def collide_entity(self, entity: Bullet | Shell, old_pos: glm.vec2) -> bool:
         assert self._wall_grid is not None
         return _collide_entity(entity, old_pos, self._wall_grid)
+
+    def collide_grenade(self, grenade: Grenade, old_pos: glm.vec2) -> bool:
+        assert self._wall_grid is not None
+        return _collide_grenade(grenade, old_pos, self._wall_grid)
 
     def find_nearest_wall_hit(
         self,

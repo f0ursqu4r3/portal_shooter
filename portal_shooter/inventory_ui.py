@@ -267,6 +267,13 @@ class InventoryUI:
             game.speed_buff_timer = 5.0
             game.inventory.remove_one(slot_index)
 
+        elif item.kind == PickupKind.ARMOR:
+            if game.player.armor < game.player.max_armor:
+                game.player.armor = min(
+                    game.player.armor + 25, game.player.max_armor
+                )
+                game.inventory.remove_one(slot_index)
+
         elif item.kind == PickupKind.AMMO:
             wk = item.weapon_kind
             if wk is not None and wk in game.owned_weapons:
@@ -378,6 +385,30 @@ class InventoryUI:
                     (cx - text.get_width() // 2, cy + 10),
                 )
 
+        elif item.kind == PickupKind.ARMOR:
+            # Shield outline
+            d = 8
+            pts = [
+                (cx - d, cy - d),
+                (cx + d, cy - d),
+                (cx + d, cy + 2),
+                (cx, cy + d),
+                (cx - d, cy + 2),
+            ]
+            pygame.draw.polygon(surface, color, pts, 2)
+
+        elif item.kind == PickupKind.KEY:
+            # Key shape
+            pygame.draw.circle(surface, color, (cx - 4, cy - 2), 5, 2)
+            pygame.draw.line(surface, color, (cx + 1, cy - 2), (cx + 12, cy - 2), 2)
+            pygame.draw.line(surface, color, (cx + 8, cy - 2), (cx + 8, cy + 4), 2)
+            pygame.draw.line(surface, color, (cx + 11, cy - 2), (cx + 11, cy + 3), 2)
+
+        elif item.kind == PickupKind.GRENADE:
+            # Circle + fuse
+            pygame.draw.circle(surface, color, (cx, cy + 2), 6, 2)
+            pygame.draw.line(surface, color, (cx, cy - 4), (cx + 4, cy - 8), 2)
+
         elif item.kind == PickupKind.WEAPON:
             # Gun silhouette: barrel + grip
             pygame.draw.line(
@@ -409,6 +440,12 @@ class InventoryUI:
             text = "Use: +25 HP"
         elif item.kind == PickupKind.SPEED:
             text = "Use: Speed 5s"
+        elif item.kind == PickupKind.ARMOR:
+            text = "Use: +25 AR"
+        elif item.kind == PickupKind.KEY:
+            text = "Floor Key"
+        elif item.kind == PickupKind.GRENADE:
+            text = "Throw: G key"
         elif item.kind == PickupKind.AMMO:
             if item.weapon_kind is not None:
                 abbr = _WEAPON_ABBREVS.get(item.weapon_kind, "???")

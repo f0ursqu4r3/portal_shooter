@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 SLOT_COUNT = 20
 MAX_STACK = 16
-_STACKABLE = {PickupKind.HEALTH, PickupKind.SPEED, PickupKind.AMMO}
+_STACKABLE = {PickupKind.HEALTH, PickupKind.SPEED, PickupKind.AMMO, PickupKind.ARMOR, PickupKind.GRENADE}
 
 
 @dataclass

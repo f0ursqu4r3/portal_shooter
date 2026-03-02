@@ -10,7 +10,8 @@ from portal_shooter.util import intersect, point_dist_to_line, ray_segment_inter
 
 if TYPE_CHECKING:
     from portal_shooter.entities.bullet import Bullet
-    from portal_shooter.entities.player import Player
+    from portal_shooter.entities.entity import Entity
+    from portal_shooter.entities.grenade import Grenade
     from portal_shooter.entities.shell import Shell
 
 
@@ -20,9 +21,8 @@ def get_nearby_walls(wall_grid: WallGrid, x: float, y: float, radius: float) -> 
     return [(glm.vec2(x1, y1), glm.vec2(x2, y2)) for x1, y1, x2, y2 in flat]
 
 
-def collide_player(player: Player, old_pos: glm.vec2, wall_grid: WallGrid) -> None:
-    """Push player out of walls using swept + push-out collision."""
-    radius = 3.0
+def collide_player(player: Entity, old_pos: glm.vec2, wall_grid: WallGrid, radius: float = 3.0) -> None:
+    """Push entity out of walls using swept + push-out collision."""
     nearby = get_nearby_walls(wall_grid, player.pos.x, player.pos.y, 20.0)
     # First pass: swept collision — snap back if player crossed a wall
     for wall in nearby:
@@ -84,6 +84,29 @@ def collide_entity(entity: Bullet | Shell, old_pos: glm.vec2, wall_grid: WallGri
                 entity.vel = glm.vec2()
                 entity.speed = 0.0
                 entity.pos = glm.vec2(old_pos)
+            return True
+    return False
+
+
+def collide_grenade(grenade: Grenade, old_pos: glm.vec2, wall_grid: WallGrid) -> bool:
+    """Bounce grenade off walls. Returns True if a wall was hit."""
+    cx = (old_pos.x + grenade.pos.x) * 0.5
+    cy = (old_pos.y + grenade.pos.y) * 0.5
+    reach = glm.distance(old_pos, grenade.pos) * 0.5 + 5.0
+    nearby = get_nearby_walls(wall_grid, cx, cy, reach)
+    for wall in nearby:
+        if intersect(old_pos, grenade.pos, wall[0], wall[1]):
+            edge = wall[1] - wall[0]
+            n = glm.vec2(-edge.y, edge.x)
+            if glm.length(n) < 1e-10:
+                continue
+            n = glm.normalize(n)
+            if glm.dot(n, grenade.vel) > 0:
+                n = -n
+            # Reflect velocity and reduce speed
+            grenade.vel = grenade.vel - n * 2 * glm.dot(grenade.vel, n)
+            grenade.speed *= grenade.bounce
+            grenade.pos = glm.vec2(old_pos)
             return True
     return False
 

@@ -11,23 +11,38 @@ from pyglm import glm
 from portal_shooter.entities import (
     Bullet,
     Camera,
+    Enemy,
+    ExitDoor,
+    MeleeEnemy,
     Pickup,
     PickupKind,
     Player,
     Portal,
+    RangedEnemy,
     Shell,
 )
+from portal_shooter.entities.entity import Entity
+from portal_shooter.entities.grenade import Grenade, GRENADE_DAMAGE, GRENADE_RADIUS
 from portal_shooter.entities.pickup import PICKUP_RANGE
 from portal_shooter.hud import HUD
 from portal_shooter.inventory import Inventory, InventoryItem
 from portal_shooter.inventory_ui import InventoryUI
+from portal_shooter.level import LevelState, get_difficulty_params
 from portal_shooter.map import GameMap, compute_visibility
+from portal_shooter.map.pathfinding import has_line_of_sight
+from portal_shooter.particles import FadeOutParticle, ParticleEmitter
 from portal_shooter.sound import SoundPlayer
 from portal_shooter.sound_propagation import PortalData, compute_sound
 from portal_shooter.util import get_collisions, intersect, point_dist_to_line
 from portal_shooter.weapons import WEAPON_STATS, WeaponKind
 
 pygame.init()
+
+_WEAPON_KIND_MAP: dict[str, WeaponKind] = {
+    "shotgun": WeaponKind.SHOTGUN,
+    "smg": WeaponKind.SMG,
+    "rifle": WeaponKind.RIFLE,
+}
 
 
 class Game:
@@ -63,25 +78,13 @@ class Game:
 
         self.entities: list[Bullet | Shell] = []
         self.bullets: list[Bullet] = []
+        self.enemy_bullets: list[Bullet] = []
 
         self.portals: list[Portal | None] = [None, None]
 
         self.owned_weapons: set[WeaponKind] = {WeaponKind.PISTOL}
 
-        _weapon_kind_map: dict[str, WeaponKind] = {
-            "shotgun": WeaponKind.SHOTGUN,
-            "smg": WeaponKind.SMG,
-            "rifle": WeaponKind.RIFLE,
-        }
         self.pickups: list[Pickup] = []
-        for pos, kind_str, weapon_sub in self.game_map.pickup_positions:
-            pk = PickupKind(kind_str)
-            wk = (
-                _weapon_kind_map.get(weapon_sub or "")
-                if pk in (PickupKind.WEAPON, PickupKind.AMMO)
-                else None
-            )
-            self.pickups.append(Pickup(pos, pk, weapon_kind=wk))
 
         self.time_scale: float = 1
         self.shot_timer: float = 0
@@ -113,6 +116,112 @@ class Game:
         )
         self._layer_size: tuple[int, int] = self.screen.get_size()
 
+        # Enemies
+        self.enemies: list[Enemy] = []
+
+        # Grenades
+        self.grenades: list[Grenade] = []
+
+        # Level progression
+        self.level: LevelState = LevelState()
+        self.exit_door: ExitDoor | None = None
+
+        self.setup_floor()
+
+    def setup_floor(self) -> None:
+        """Set up (or reset) a floor: regenerate map, spawn enemies, place key + exit."""
+        self.game_map = GameMap()
+        self.player.pos = glm.vec2(self.game_map.spawn_pos)
+        self.camera = Camera(
+            self.player.pos,
+            target=self.player,
+            map_bounds=self.game_map.bounds,
+        )
+
+        # Reset projectiles and portals
+        self.entities = []
+        self.bullets = []
+        self.enemy_bullets = []
+        self.grenades = []
+        self.portals = [None, None]
+
+        # Spawn pickups from map generation
+        self.pickups = []
+        for pos, kind_str, weapon_sub in self.game_map.pickup_positions:
+            pk = PickupKind(kind_str)
+            wk = (
+                _WEAPON_KIND_MAP.get(weapon_sub or "")
+                if pk in (PickupKind.WEAPON, PickupKind.AMMO)
+                else None
+            )
+            self.pickups.append(Pickup(pos, pk, weapon_kind=wk))
+
+        # Level setup: key + exit
+        self.level.setup_floor(self.game_map.rooms)
+        # Place key pickup
+        self.pickups.append(
+            Pickup(glm.vec2(self.level.key_pos), PickupKind.KEY)
+        )
+        # Place exit door
+        self.exit_door = ExitDoor(glm.vec2(self.level.exit_pos))
+
+        # Spawn enemies
+        self.spawn_enemies_for_rooms()
+
+        # Re-bake minimap
+        self.hud.bake_minimap(self)
+
+    def spawn_enemies_for_rooms(self) -> None:
+        """Spawn enemies in rooms (skip room 0 = spawn room)."""
+        self.enemies = []
+        params = get_difficulty_params(self.level.floor)
+        count_mul = params["enemy_count_mul"]
+        health_mul = params["enemy_health_mul"]
+
+        for i, room in enumerate(self.game_map.rooms):
+            if i == 0:
+                continue
+            area = room.bounds.width * room.bounds.height
+            if area < 2000:
+                continue
+            base_count = 1 if area < 5000 else (2 if area < 10000 else 3)
+            count = max(1, int(base_count * count_mul))
+
+            for _ in range(count):
+                offset = glm.vec2(
+                    random.uniform(-20, 20), random.uniform(-20, 20)
+                )
+                pos = room.center + offset
+
+                enemy: Enemy
+                if random.random() < 0.6:
+                    enemy = MeleeEnemy(pos)
+                else:
+                    enemy = RangedEnemy(pos)
+
+                enemy.health = int(enemy.health * health_mul)
+                enemy.max_health = enemy.health
+                enemy.current_room = i
+
+                # Drop table: random ammo type
+                weapon_types = ["shotgun", "smg", "rifle"]
+                enemy.drop_table = [
+                    ("health", None, 0.3),
+                    ("ammo", random.choice(weapon_types), 0.2),
+                ]
+                self.enemies.append(enemy)
+
+    def _apply_damage(self, amount: int) -> None:
+        """Apply damage to player: armor absorbs first, then health."""
+        if self.player.invincible:
+            return
+        if self.player.armor > 0:
+            absorbed = min(self.player.armor, amount)
+            self.player.armor -= absorbed
+            amount -= absorbed
+        if amount > 0:
+            self.player.health -= amount
+
     def run(self) -> None:
         with cProfile.Profile() as p:
             while self.running:
@@ -131,29 +240,30 @@ class Game:
 
         self.process_pygame_events()
 
-        self.player.vel = glm.vec2()
-        pressed = pygame.key.get_pressed()
-        if pressed[pygame.K_w]:
-            self.player.vel.y -= self.player.speed
-        if pressed[pygame.K_s]:
-            self.player.vel.y += self.player.speed
-        if pressed[pygame.K_a]:
-            self.player.vel.x -= self.player.speed
-        if pressed[pygame.K_d]:
-            self.player.vel.x += self.player.speed
-        if (
-            any(
-                [
-                    pressed[pygame.K_w],
-                    pressed[pygame.K_s],
-                    pressed[pygame.K_a],
-                    pressed[pygame.K_d],
-                ]
-            )
-            and self.player_walk_timer >= 0.1
-        ):
-            self.sound_player.play("Step1", volume=0.2)
-            self.player_walk_timer = 0
+        if not self.player.is_dashing:
+            self.player.vel = glm.vec2()
+            pressed = pygame.key.get_pressed()
+            if pressed[pygame.K_w]:
+                self.player.vel.y -= self.player.speed
+            if pressed[pygame.K_s]:
+                self.player.vel.y += self.player.speed
+            if pressed[pygame.K_a]:
+                self.player.vel.x -= self.player.speed
+            if pressed[pygame.K_d]:
+                self.player.vel.x += self.player.speed
+            if (
+                any(
+                    [
+                        pressed[pygame.K_w],
+                        pressed[pygame.K_s],
+                        pressed[pygame.K_a],
+                        pressed[pygame.K_d],
+                    ]
+                )
+                and self.player_walk_timer >= 0.1
+            ):
+                self.sound_player.play("Step1", volume=0.2)
+                self.player_walk_timer = 0
 
         if pygame.mouse.get_pressed()[0] and not self.shot_timer and not self.inventory_ui.is_open:
             stats = WEAPON_STATS[self.current_weapon]
@@ -245,11 +355,27 @@ class Game:
                     if self.inventory_ui.handle_key(event.key, self):
                         pass  # consumed by inventory UI
                     elif self._nearest_pickup is not None:
-                        item = InventoryItem.from_pickup(self._nearest_pickup)
-                        if self.inventory.add(item):
+                        pickup = self._nearest_pickup
+                        # KEY pickup: set level state directly
+                        if pickup.kind == PickupKind.KEY:
+                            self.level.has_key = True
+                            if self.exit_door is not None:
+                                self.exit_door.active = True
                             self.sound_player.play("Portal1", volume=0.5)
-                            self.pickups.remove(self._nearest_pickup)
+                            self.pickups.remove(pickup)
                             self._nearest_pickup = None
+                        else:
+                            item = InventoryItem.from_pickup(pickup)
+                            if self.inventory.add(item):
+                                self.sound_player.play("Portal1", volume=0.5)
+                                self.pickups.remove(pickup)
+                                self._nearest_pickup = None
+
+                elif event.key in (pygame.K_LSHIFT, pygame.K_RSHIFT):
+                    self.player.start_dash()
+
+                elif event.key == pygame.K_g:
+                    self._throw_grenade()
 
                 elif event.key == pygame.K_SPACE:
                     print(f"{self.player.health=} {self.clock.get_fps()=}")
@@ -269,6 +395,24 @@ class Game:
                     idx = (idx + event.y) % len(owned)
                     self.current_weapon = owned[idx]
 
+    def _throw_grenade(self) -> None:
+        """Find a grenade in inventory and throw it toward cursor."""
+        for i, slot in enumerate(self.inventory.slots):
+            if slot is not None and slot.kind == PickupKind.GRENADE:
+                self.inventory.remove_one(i)
+                direction = self.mpos_world - self.player.pos
+                if glm.length(direction) > 1:
+                    direction = glm.normalize(direction)
+                else:
+                    direction = glm.vec2(1, 0)
+                grenade = Grenade(
+                    glm.vec2(self.player.pos) + direction * 10,
+                    direction,
+                )
+                self.grenades.append(grenade)
+                self.sound_player.play("Shoot1", volume=0.3)
+                break
+
     def update(self) -> None:
         tdt = min(self.clock.tick() * 0.001, 0.05)
 
@@ -287,6 +431,7 @@ class Game:
 
         self.do_portal(self.player)
 
+        # Entity updates (bullets + shells)
         dead: set[Bullet | Shell] = set()
         for entity in self.entities:
             old_pos = glm.vec2(entity.pos)
@@ -301,8 +446,9 @@ class Game:
 
             self.do_portal(entity)
 
-        for collision in get_collisions(self.player, self.bullets):
-            self.player.health -= collision.damage
+        # Enemy bullets hit player
+        for collision in get_collisions(self.player, self.enemy_bullets):
+            self._apply_damage(collision.damage)
             dead.add(collision)
             if self.player.health > 0:
                 vel = glm.vec2(-collision.vel.y, collision.vel.x)
@@ -317,6 +463,13 @@ class Game:
         if dead:
             self.entities = [e for e in self.entities if e not in dead]
             self.bullets = [b for b in self.bullets if b not in dead]
+            self.enemy_bullets = [b for b in self.enemy_bullets if b not in dead]
+
+        # Enemy updates
+        self._update_enemies(dt)
+
+        # Grenade updates
+        self._update_grenades(dt)
 
         for portal in self.portals:
             if portal:
@@ -337,6 +490,195 @@ class Game:
 
         if self.speed_buff_timer > 0:
             self.speed_buff_timer = max(0, self.speed_buff_timer - dt)
+
+        # Exit door
+        if self.exit_door is not None:
+            self.exit_door.update(dt)
+            if self.exit_door.active and self.exit_door.in_range(self.player.pos):
+                self.level.advance_floor()
+                self.setup_floor()
+
+    def _update_enemies(self, dt: float) -> None:
+        """Update all enemies: pathfinding, AI, collision, damage."""
+        assert self.game_map._wall_grid is not None
+        room_graph = self.game_map.room_graph
+
+        dead_enemies: list[Enemy] = []
+
+        for enemy in self.enemies:
+            if not enemy.alive:
+                enemy.update(dt)
+                # Keep dead enemies briefly for particle effects
+                if not enemy.emitter.particles:
+                    dead_enemies.append(enemy)
+                continue
+
+            # Re-path every 0.5s
+            if enemy._path_timer <= 0 and room_graph is not None:
+                enemy._path_timer = 0.5
+                enemy.current_room = room_graph.find_room(enemy.pos)
+                player_room = room_graph.find_room(self.player.pos)
+                if enemy.current_room is not None and player_room is not None:
+                    path = room_graph.find_path(enemy.current_room, player_room)
+                    if len(path) > 1:
+                        next_room = path[1]
+                        enemy.target_waypoint = glm.vec2(
+                            self.game_map.rooms[next_room].center
+                        )
+                    else:
+                        enemy.target_waypoint = glm.vec2(self.player.pos)
+
+            # LOS check
+            los = has_line_of_sight(
+                enemy.pos, self.player.pos, self.game_map._wall_grid
+            )
+
+            # AI update
+            wants_fire = enemy.update_ai(
+                self.player.pos, los, enemy.target_waypoint
+            )
+
+            # Ranged enemy firing
+            if wants_fire:
+                fire_dir = glm.normalize(self.player.pos - enemy.pos)
+                bullet = Bullet(
+                    enemy.pos + fire_dir * 8,
+                    fire_dir,
+                    speed=80,
+                    damage=enemy.damage,
+                    color=(160, 80, 200),
+                )
+                self.entities.append(bullet)
+                self.enemy_bullets.append(bullet)
+                self.play_spatial("Shoot1", float(enemy.pos.x), float(enemy.pos.y), 0.3)
+
+            old_pos = glm.vec2(enemy.pos)
+            enemy.update(dt)
+            self.game_map.collide_player(enemy, old_pos, radius=3.0)
+            self.do_portal(enemy)
+
+            # Player bullets hit enemies
+            for collision in get_collisions(enemy, self.bullets):
+                knockback = glm.normalize(collision.vel) * 30 if collision.vel else None
+                enemy.take_damage(collision.damage, knockback)
+                collision.life = 0
+                self.play_spatial("Hurt1", float(enemy.pos.x), float(enemy.pos.y), 0.5)
+
+            # Melee contact damage
+            if (
+                isinstance(enemy, MeleeEnemy)
+                and enemy.alive
+                and enemy._attack_timer <= 0
+                and enemy.rect.colliderect(self.player.rect)
+            ):
+                self._apply_damage(enemy.damage)
+                enemy._attack_timer = enemy.attack_cooldown
+                # Retreat after landing the hit
+                enemy.start_retreat(self.player.pos)
+                if self.player.health > 0:
+                    self.player.emitter.vel = glm.vec2(
+                        random.uniform(-1, 1), random.uniform(-1, 1)
+                    )
+                    self.player.emitter.burst()
+                    self.sound_player.play("Hurt1")
+                else:
+                    self.player.emitter.vel = None
+                    self.player.emitter.burst(50)
+                    self.time_scale = 0.05
+
+        # Remove fully dead enemies and spawn drops
+        for enemy in dead_enemies:
+            self._spawn_enemy_drops(enemy)
+            self.enemies.remove(enemy)
+
+        # Clean up dead bullets
+        self.bullets = [b for b in self.bullets if b.life > 0]
+
+    def _spawn_enemy_drops(self, enemy: Enemy) -> None:
+        """Spawn pickup drops from enemy's drop table."""
+        for kind_str, weapon_sub, chance in enemy.drop_table:
+            if random.random() < chance:
+                pk = PickupKind(kind_str)
+                wk = _WEAPON_KIND_MAP.get(weapon_sub or "") if weapon_sub else None
+                offset = glm.vec2(random.uniform(-5, 5), random.uniform(-5, 5))
+                self.pickups.append(Pickup(enemy.pos + offset, pk, weapon_kind=wk))
+
+    def _update_grenades(self, dt: float) -> None:
+        """Update grenades: movement, bounce, portal, detonation."""
+        dead_grenades: list[Grenade] = []
+
+        for grenade in self.grenades:
+            if grenade.detonated:
+                # Keep updating emitter for explosion particles
+                grenade.update(dt)
+                if not grenade.emitter.particles:
+                    dead_grenades.append(grenade)
+                continue
+
+            old_pos = glm.vec2(grenade.pos)
+            grenade.update(dt)
+
+            if grenade.detonated:
+                # Just detonated this frame — apply area damage
+                self._detonate_grenade(grenade)
+                continue
+
+            self.game_map.collide_grenade(grenade, old_pos)
+            self.do_portal(grenade)
+
+        for g in dead_grenades:
+            self.grenades.remove(g)
+
+    def _detonate_grenade(self, grenade: Grenade) -> None:
+        """Apply area damage from grenade explosion."""
+        # Damage enemies
+        for enemy in self.enemies:
+            if not enemy.alive:
+                continue
+            dist = glm.distance(grenade.pos, enemy.pos)
+            if dist < GRENADE_RADIUS:
+                falloff = 1.0 - dist / GRENADE_RADIUS
+                damage = int(GRENADE_DAMAGE * falloff)
+                knockback = None
+                if dist > 1:
+                    knockback = glm.normalize(enemy.pos - grenade.pos) * 50
+                enemy.take_damage(damage, knockback)
+
+        # Self-damage to player (50% reduced)
+        player_dist = glm.distance(grenade.pos, self.player.pos)
+        if player_dist < GRENADE_RADIUS:
+            falloff = 1.0 - player_dist / GRENADE_RADIUS
+            damage = int(GRENADE_DAMAGE * falloff * 0.5)
+            self._apply_damage(damage)
+            if self.player.health > 0:
+                self.player.emitter.burst()
+            else:
+                self.player.emitter.burst(50)
+                self.time_scale = 0.05
+
+        # Explosion particles — replace the trail emitter with a big burst
+        grenade.emitter = ParticleEmitter(
+            pos=glm.vec2(grenade.pos),
+            vel=None,
+            spawn_rate=0,
+            shape=ParticleEmitter.Circle(10),
+            particle_class=FadeOutParticle,
+            particle_kwargs={"color": (255, 180, 40)},
+        )
+        grenade.emitter.burst(30)
+        # Secondary darker ring
+        inner = ParticleEmitter(
+            pos=glm.vec2(grenade.pos),
+            vel=None,
+            spawn_rate=0,
+            shape=ParticleEmitter.Circle(4),
+            particle_class=FadeOutParticle,
+            particle_kwargs={"color": (255, 80, 20)},
+        )
+        inner.burst(15)
+        # Merge inner particles into main emitter so they draw together
+        grenade.emitter.particles.extend(inner.particles)
+        self.play_spatial("Shoot1", float(grenade.pos.x), float(grenade.pos.y), 0.8)
 
     def play_spatial(
         self, sound_name: str, source_x: float, source_y: float, base_volume: float = 1.0
@@ -384,7 +726,7 @@ class Game:
         if final_vol > 0.01:
             self.sound_player.play(sound_name, volume=final_vol, pan=pan)
 
-    def do_portal(self, entity: Player | Bullet | Shell) -> None:
+    def do_portal(self, entity: Entity) -> None:
         if not (all(self.portals) and entity.vel):
             return
         for i, portal in enumerate(self.portals):
@@ -436,8 +778,17 @@ class Game:
         for pickup in self.pickups:
             pickup.draw(self.layer, cam_offset)
 
-        if self._nearest_pickup is not None:
-            self._draw_pickup_tooltip(self.layer, self._nearest_pickup, cam_offset)
+        # Draw enemies
+        for enemy in self.enemies:
+            enemy.draw(self.layer, cam_offset)
+
+        # Draw grenades
+        for grenade in self.grenades:
+            grenade.draw(self.layer, cam_offset)
+
+        # Draw exit door
+        if self.exit_door is not None:
+            self.exit_door.draw(self.layer, cam_offset)
 
         self.player.aim_target = self.mpos_world
         self.player.draw(self.layer, cam_offset)
@@ -453,6 +804,9 @@ class Game:
             self.layer.blit(self.fog, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
 
         self.screen.blit(self.layer, (0, 0))
+
+        if self._nearest_pickup is not None:
+            self._draw_pickup_tooltip(self.screen, self._nearest_pickup, cam_offset)
 
         pygame.transform.scale(self.screen, self.window_size, self.window)
         self.hud.draw(self.window, self)
