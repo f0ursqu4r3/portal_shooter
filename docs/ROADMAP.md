@@ -51,13 +51,17 @@
 
 ### Tier 3 — Environment
 
-- [ ] **Destructible walls**
-  - Marked wall tiles that bullets can break
-  - Opens new paths and portal placement spots
+- [x] **Destructible crates**
+  - Breakable box obstacles scattered in rooms (1-3 per large room)
+  - Bullets and grenades damage crates; destroyed crates remove their walls
+  - Visual: wooden crate with cross pattern, darkens as damaged, particle burst on break
+  - Collision system returns hit wall identity for targeted damage
 
-- [ ] **Doors and switches**
-  - Locked doors requiring key items
-  - Pressure plates / switches that open passages
+- [x] **Doors and switches**
+  - Doors placed across corridors as blocking wall segments
+  - Pressure-plate switches on the floor near doors
+  - Walking onto a switch permanently opens the linked door
+  - Minimap shows unactivated switch positions (orange dots)
 
 ### Tier 4 — Polish
 

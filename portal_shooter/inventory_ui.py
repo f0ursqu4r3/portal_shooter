@@ -28,6 +28,7 @@ _WEAPON_ABBREVS: dict[WeaponKind, str] = {
     WeaponKind.SHOTGUN: "SHG",
     WeaponKind.SMG: "SMG",
     WeaponKind.RIFLE: "RFL",
+    WeaponKind.PORTAL_GUN: "PGL",
 }
 
 
@@ -48,9 +49,7 @@ class InventoryUI:
 
     def __init__(self) -> None:
         self._open: bool = False
-        self._font: pygame.font.Font = pygame.font.Font(
-            "assets/fonts/homespun.ttf", 16
-        )
+        self._font: pygame.font.Font = pygame.font.Font("assets/fonts/homespun.ttf", 16)
         self._font_sm: pygame.font.Font = pygame.font.Font(
             "assets/fonts/homespun.ttf", 12
         )
@@ -63,9 +62,7 @@ class InventoryUI:
             (PANEL_WIDTH, 720), pygame.SRCALPHA
         )
         self._panel_bg.fill((20, 18, 24, 220))
-        pygame.draw.line(
-            self._panel_bg, (60, 55, 70), (0, 0), (0, 720), 1
-        )
+        pygame.draw.line(self._panel_bg, (60, 55, 70), (0, 0), (0, 720), 1)
 
         # Title
         self._title_surf: pygame.Surface = self._font.render(
@@ -115,7 +112,7 @@ class InventoryUI:
         """Handle a key press while the inventory is open. Returns True if consumed."""
         if not self._open:
             return False
-        if key == pygame.K_f:
+        if key == pygame.K_e:
             mx, my = pygame.mouse.get_pos()
             slot = self.slot_at_pos(mx, my)
             if slot is not None and game.inventory.slots[slot] is not None:
@@ -226,7 +223,7 @@ class InventoryUI:
         player_pos = game.player.pos
         cursor_world = game.mpos_world
         direction = cursor_world - player_pos
-        length = math.sqrt(direction.x ** 2 + direction.y ** 2)
+        length = math.sqrt(direction.x**2 + direction.y**2)
         if length > 0:
             direction = direction / length
         else:
@@ -249,11 +246,10 @@ class InventoryUI:
             wk = item.weapon_kind
             if wk is not None:
                 game.owned_weapons.add(wk)
-                wstats = WEAPON_STATS[wk]
-                game.ammo[wk] = min(
-                    game.ammo[wk] + wstats.pickup_ammo, wstats.max_ammo
-                )
+                stats = WEAPON_STATS[wk]
+                game.ammo[wk] = stats.magazine_size if stats.magazine_size > 0 else 0
                 game.current_weapon = wk
+                game._reloading = False
                 game.inventory.remove(slot_index)
 
         elif item.kind == PickupKind.HEALTH:
@@ -269,20 +265,8 @@ class InventoryUI:
 
         elif item.kind == PickupKind.ARMOR:
             if game.player.armor < game.player.max_armor:
-                game.player.armor = min(
-                    game.player.armor + 25, game.player.max_armor
-                )
+                game.player.armor = min(game.player.armor + 25, game.player.max_armor)
                 game.inventory.remove_one(slot_index)
-
-        elif item.kind == PickupKind.AMMO:
-            wk = item.weapon_kind
-            if wk is not None and wk in game.owned_weapons:
-                wstats = WEAPON_STATS[wk]
-                if game.ammo[wk] < wstats.max_ammo:
-                    game.ammo[wk] = min(
-                        game.ammo[wk] + wstats.pickup_ammo, wstats.max_ammo
-                    )
-                    game.inventory.remove_one(slot_index)
 
     def draw(self, window: pygame.Surface, game: Game) -> None:
         if not self._open:
@@ -332,7 +316,11 @@ class InventoryUI:
                 self._draw_quantity(window, self._drag_item.quantity, drag_rect)
 
         # Tooltip on hover
-        if hover is not None and inv.slots[hover] is not None and self._drag_from is None:
+        if (
+            hover is not None
+            and inv.slots[hover] is not None
+            and self._drag_from is None
+        ):
             hover_item = inv.slots[hover]
             assert hover_item is not None
             self._draw_tooltip(window, hover_item, mx, my)
@@ -411,12 +399,8 @@ class InventoryUI:
 
         elif item.kind == PickupKind.WEAPON:
             # Gun silhouette: barrel + grip
-            pygame.draw.line(
-                surface, color, (cx - 12, cy - 2), (cx + 12, cy - 2), 3
-            )
-            pygame.draw.line(
-                surface, color, (cx + 4, cy - 2), (cx + 4, cy + 8), 3
-            )
+            pygame.draw.line(surface, color, (cx - 12, cy - 2), (cx + 12, cy - 2), 3)
+            pygame.draw.line(surface, color, (cx + 4, cy - 2), (cx + 4, cy + 8), 3)
             # Weapon abbreviation
             if item.weapon_kind is not None:
                 abbr = _WEAPON_ABBREVS.get(item.weapon_kind, "???")
@@ -449,9 +433,9 @@ class InventoryUI:
         elif item.kind == PickupKind.AMMO:
             if item.weapon_kind is not None:
                 abbr = _WEAPON_ABBREVS.get(item.weapon_kind, "???")
-                text = f"Use: +{abbr} Ammo"
+                text = f"{abbr} Reserve"
             else:
-                text = "Use: +Ammo"
+                text = "Reserve Ammo"
         else:
             text = "Use"
 
@@ -468,10 +452,6 @@ class InventoryUI:
             tx = mx + 8
         if ty < 0:
             ty = my + 8
-        pygame.draw.rect(
-            surface, (20, 18, 24), (tx, ty, tw + pad * 2, th + pad * 2)
-        )
-        pygame.draw.rect(
-            surface, (60, 55, 70), (tx, ty, tw + pad * 2, th + pad * 2), 1
-        )
+        pygame.draw.rect(surface, (20, 18, 24), (tx, ty, tw + pad * 2, th + pad * 2))
+        pygame.draw.rect(surface, (60, 55, 70), (tx, ty, tw + pad * 2, th + pad * 2), 1)
         surface.blit(tip, (tx + pad, ty + pad))

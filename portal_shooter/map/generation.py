@@ -329,6 +329,93 @@ def collect_walls(rooms: list[Room], corridors: list[list[glm.vec2]]) -> list[Wa
     return walls
 
 
+def generate_door_positions(
+    rooms: list[Room], corridors: list[list[glm.vec2]]
+) -> list[tuple[glm.vec2, glm.vec2, glm.vec2]]:
+    """Generate door and switch positions in corridors.
+
+    Returns list of (door_p1, door_p2, switch_pos) tuples.
+    Places doors across corridor midpoints with switches in adjacent rooms.
+    """
+    if len(corridors) < 2 or len(rooms) < 3:
+        return []
+
+    results: list[tuple[glm.vec2, glm.vec2, glm.vec2]] = []
+    # Only place doors in a subset of corridors (30% chance each, max 3)
+    candidates = list(range(len(corridors)))
+    random.shuffle(candidates)
+    max_doors = min(3, len(corridors) // 3)
+
+    for ci in candidates:
+        if len(results) >= max_doors:
+            break
+        if random.random() > 0.3:
+            continue
+        cverts = corridors[ci]
+        if len(cverts) < 4:
+            continue
+
+        # Corridor midpoint and perpendicular for door placement
+        mid = (cverts[0] + cverts[2]) * 0.5
+        # Door direction: across the corridor (perpendicular to corridor axis)
+        axis = cverts[1] - cverts[0]
+        if glm.length(axis) < 1:
+            continue
+        axis_n = glm.normalize(axis)
+        perp = glm.vec2(-axis_n.y, axis_n.x)
+
+        # Door endpoints: span the corridor width
+        half_w = glm.distance(cverts[0], cverts[3]) * 0.5
+        if half_w < 5:
+            continue
+        door_p1 = mid - perp * half_w
+        door_p2 = mid + perp * half_w
+
+        # Find nearest room for switch placement
+        best_room: Room | None = None
+        best_dist = float("inf")
+        for room in rooms:
+            d = glm.distance(mid, room.center)
+            if d < best_dist and d > 10:
+                best_dist = d
+                best_room = room
+        if best_room is None:
+            continue
+
+        # Place switch toward the room center from the door
+        switch_dir = glm.normalize(best_room.center - mid)
+        switch_pos = mid + switch_dir * min(25, best_dist * 0.4)
+
+        results.append((door_p1, door_p2, switch_pos))
+
+    return results
+
+
+def generate_crate_positions(rooms: list[Room]) -> list[glm.vec2]:
+    """Generate positions for destructible crates in qualifying rooms (skip room 0)."""
+    positions: list[glm.vec2] = []
+    margin = 25
+    for i, room in enumerate(rooms):
+        if i == 0:
+            continue
+        area = room.bounds.width * room.bounds.height
+        if area < 4000:
+            continue
+        # 1-3 crates per large room
+        n_crates = random.randint(1, min(3, max(1, int(area / 5000))))
+        b = room.bounds
+        for _ in range(n_crates):
+            if b.right - b.left < 2 * margin + 1 or b.bottom - b.top < 2 * margin + 1:
+                continue
+            px = random.uniform(b.left + margin, b.right - margin)
+            py = random.uniform(b.top + margin, b.bottom - margin)
+            # Avoid spawning on top of room center (where pickups go)
+            if abs(px - room.center.x) < 15 and abs(py - room.center.y) < 15:
+                continue
+            positions.append(glm.vec2(px, py))
+    return positions
+
+
 def add_pillars(rooms: list[Room]) -> list[Wall]:
     """Scatter small square pillars inside large rooms as internal obstacles."""
     walls: list[Wall] = []

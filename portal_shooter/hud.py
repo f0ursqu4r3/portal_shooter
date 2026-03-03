@@ -78,6 +78,7 @@ class HUD:
             WeaponKind.SHOTGUN: "SHG",
             WeaponKind.SMG: "SMG",
             WeaponKind.RIFLE: "RFL",
+            WeaponKind.PORTAL_GUN: "PGL",
         }
         self._weapon_labels: dict[WeaponKind, pygame.Surface] = {
             kind: self._font_sm.render(
@@ -284,11 +285,30 @@ class HUD:
             stats = WEAPON_STATS[wk]
             if stats.ammo_per_shot == 0:
                 ammo_str = "\u221e"
+            elif stats.magazine_size > 0:
+                reserve = game._count_reserve_ammo(wk)
+                # Flash/dim text while reloading current weapon
+                if is_selected and game._reloading:
+                    pulse = int(self._timer * 6) % 2
+                    ammo_color = (120, 120, 120) if pulse else ammo_color
+                ammo_str = f"{game.ammo[wk]}|{reserve}"
             else:
                 ammo_str = str(game.ammo[wk])
 
             ammo_surf = self._font_sm.render(ammo_str, False, ammo_color)
-            window.blit(ammo_surf, (label_x + label.get_width() + 6, y))
+            ammo_x = label_x + label.get_width() + 6
+            window.blit(ammo_surf, (ammo_x, y))
+
+            # Reload progress bar for selected weapon
+            if is_selected and game._reloading and stats.reload_time > 0:
+                bar_y = y + row_h - 3
+                bar_w = 40
+                bar_h = 2
+                progress = 1.0 - game._reload_timer / stats.reload_time
+                fill_w = max(0, int(bar_w * progress))
+                pygame.draw.rect(window, (40, 40, 40), (ammo_x, bar_y, bar_w, bar_h))
+                if fill_w > 0:
+                    pygame.draw.rect(window, stats.color, (ammo_x, bar_y, fill_w, bar_h))
 
     def _draw_portal_indicators(self, window: pygame.Surface, game: Game) -> None:
         y = 692
@@ -350,6 +370,13 @@ class HUD:
             dy = my + int(game.exit_door.pos.y * sy)
             door_color = (60, 220, 80) if game.exit_door.active else (70, 70, 75)
             pygame.draw.circle(window, door_color, (dx, dy), 2)
+
+        # Switch dots
+        for switch in game.switches:
+            if not switch.activated:
+                swx = mx + int(switch.pos.x * sx)
+                swy = my + int(switch.pos.y * sy)
+                pygame.draw.circle(window, (180, 100, 50), (swx, swy), 1)
 
         # Portal dots
         if game.portals[0]:

@@ -34,7 +34,4 @@ class Camera:
             glm.lerp(self.pos, self.target.pos + look_ahead, 1 - 0.1**dt)
             + self.offset
         )
-        if self.map_bounds:
-            half = screen_size / 2
-            self.pos = glm.clamp(self.pos, half, self.map_bounds - half)
         self.shake *= 0.85

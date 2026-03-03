@@ -116,22 +116,26 @@ class ParticleEmitter:
         self.age: float = 0
 
     def update(self, dt: float) -> None:
-        self.last_spawn += dt
-
-        spawn_rate = (1 / self.spawn_rate) if self.spawn_rate > 0 else 0
-        if spawn_rate and self.last_spawn >= spawn_rate:
-            for _ in range(max(1, int(dt / spawn_rate))):
-                self.create_particle()
-            self.last_spawn = 0
-
-        for particle in self.particles:
-            particle.update(dt)
-        self.particles = [p for p in self.particles if p.alive]
-
-        if self.deactivate_after_burst and not self.particles:
-            self.active = False
-
         self.age += dt
+
+        if self.spawn_rate > 0:
+            self.last_spawn += dt
+            spawn_rate = 1.0 / self.spawn_rate
+            if self.last_spawn >= spawn_rate:
+                for _ in range(max(1, int(dt / spawn_rate))):
+                    self.create_particle()
+                self.last_spawn = 0.0
+        elif not self.particles:
+            # No spawn rate and no particles — nothing to do
+            return
+
+        if self.particles:
+            for particle in self.particles:
+                particle.update(dt)
+            self.particles = [p for p in self.particles if p.alive]
+
+            if self.deactivate_after_burst and not self.particles:
+                self.active = False
 
     def create_particle(self) -> None:
         vel = self.vel

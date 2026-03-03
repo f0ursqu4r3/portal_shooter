@@ -19,6 +19,8 @@ from portal_shooter.map.generation import (
     collect_walls,
     connect,
     create_rooms,
+    generate_crate_positions,
+    generate_door_positions,
     generate_pickup_positions,
     split,
 )
@@ -43,6 +45,8 @@ class GameMap:
         "bounds",
         "spawn_pos",
         "pickup_positions",
+        "crate_positions",
+        "door_positions",
         "room_graph",
         "_floor_surface",
         "_wall_grid",
@@ -57,6 +61,8 @@ class GameMap:
         self.bounds: glm.vec2 = glm.vec2(width, height)
         self.spawn_pos: glm.vec2 = glm.vec2(width / 2, height / 2)
         self.pickup_positions: list[tuple[glm.vec2, str, str | None]] = []
+        self.crate_positions: list[glm.vec2] = []
+        self.door_positions: list[tuple[glm.vec2, glm.vec2, glm.vec2]] = []
         self._floor_surface: pygame.Surface | None = None
         self._wall_grid: WallGrid | None = None
         self.room_graph: RoomGraph | None = None
@@ -76,11 +82,13 @@ class GameMap:
         if self.rooms:
             self.spawn_pos = glm.vec2(self.rooms[0].center)
             self.pickup_positions = generate_pickup_positions(self.rooms)
+            self.crate_positions = generate_crate_positions(self.rooms)
+            self.door_positions = generate_door_positions(self.rooms, self.corridors)
         self.room_graph = RoomGraph(self.rooms, self.corridors)
         self._bake_floor_surface()
 
     def _bake_floor_surface(self) -> None:
-        """Pre-render the floor polygons onto a surface for fast drawing."""
+        """Pre-render the floor polygons + wall lines onto a surface."""
         self._floor_surface = pygame.Surface(
             (self.width, self.height), pygame.SRCALPHA
         )
@@ -93,6 +101,13 @@ class GameMap:
             pts = [(int(v.x), int(v.y)) for v in cverts]
             if len(pts) >= 3:
                 pygame.draw.polygon(self._floor_surface, FLOOR_COLOR, pts)
+        # Bake wall lines onto the surface
+        for wall in self.walls:
+            p1, p2 = wall
+            pygame.draw.line(
+                self._floor_surface, WALL_COLOR,
+                (int(p1.x), int(p1.y)), (int(p2.x), int(p2.y)), 1,
+            )
 
     def draw(self, surface: pygame.Surface, cam_offset: glm.vec2) -> None:
         if self._floor_surface is None:
@@ -103,38 +118,41 @@ class GameMap:
             surface.get_width(), surface.get_height(),
         )
 
-        # Blit the visible portion of the floor surface
+        # Blit the visible portion of the pre-baked floor + walls surface
         surface.blit(self._floor_surface, (0, 0), screen_rect)
 
-        # Draw wall lines (only those near viewport)
-        inflated = screen_rect.inflate(20, 20)
-        for wall in self.walls:
-            p1, p2 = wall
-            # Quick AABB check
-            wx1 = min(p1.x, p2.x)
-            wy1 = min(p1.y, p2.y)
-            wx2 = max(p1.x, p2.x)
-            wy2 = max(p1.y, p2.y)
-            if wx2 < inflated.left or wx1 > inflated.right:
-                continue
-            if wy2 < inflated.top or wy1 > inflated.bottom:
-                continue
-
-            sp1 = p1 - cam_offset
-            sp2 = p2 - cam_offset
-            pygame.draw.line(surface, WALL_COLOR, sp1, sp2, 1)
-
-    def collide_player(self, entity: Entity, old_pos: glm.vec2, radius: float = 3.0) -> None:
+    def collide_player(
+        self, entity: Entity, old_pos: glm.vec2,
+        radius: float = 3.0, push_iters: int = 3,
+    ) -> None:
         assert self._wall_grid is not None
-        _collide_player(entity, old_pos, self._wall_grid, radius)
+        _collide_player(entity, old_pos, self._wall_grid, radius, push_iters)
 
-    def collide_entity(self, entity: Bullet | Shell, old_pos: glm.vec2) -> bool:
+    def collide_entity(
+        self, entity: Bullet | Shell, old_pos: glm.vec2
+    ) -> tuple[float, float, float, float] | None:
         assert self._wall_grid is not None
         return _collide_entity(entity, old_pos, self._wall_grid)
 
     def collide_grenade(self, grenade: Grenade, old_pos: glm.vec2) -> bool:
         assert self._wall_grid is not None
         return _collide_grenade(grenade, old_pos, self._wall_grid)
+
+    def remove_walls(self, to_remove: list[Wall]) -> None:
+        """Remove walls from the map and rebuild the spatial grid + surface."""
+        remove_set = {(w[0].x, w[0].y, w[1].x, w[1].y) for w in to_remove}
+        self.walls = [
+            w for w in self.walls
+            if (w[0].x, w[0].y, w[1].x, w[1].y) not in remove_set
+        ]
+        self._wall_grid = WallGrid(self.walls)
+        self._bake_floor_surface()
+
+    def add_walls(self, new_walls: list[Wall]) -> None:
+        """Add walls to the map and rebuild the spatial grid + surface."""
+        self.walls.extend(new_walls)
+        self._wall_grid = WallGrid(self.walls)
+        self._bake_floor_surface()
 
     def find_nearest_wall_hit(
         self,

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 from pyglm import glm
 
 from portal_shooter.map.spatial_grid import WallGrid
 from portal_shooter.map.types import Wall
-from portal_shooter.util import intersect, point_dist_to_line, ray_segment_intersect
+from portal_shooter.util import ray_segment_intersect
 
 if TYPE_CHECKING:
     from portal_shooter.entities.bullet import Bullet
@@ -15,99 +16,230 @@ if TYPE_CHECKING:
     from portal_shooter.entities.shell import Shell
 
 
-def get_nearby_walls(wall_grid: WallGrid, x: float, y: float, radius: float) -> list[Wall]:
-    """Return Wall tuples near a point using the spatial grid."""
-    flat = wall_grid.query(x, y, radius)
-    return [(glm.vec2(x1, y1), glm.vec2(x2, y2)) for x1, y1, x2, y2 in flat]
+# ---------------------------------------------------------------------------
+# Inlined raw-float helpers (no glm.vec2 allocations)
+# ---------------------------------------------------------------------------
+
+def _segments_intersect(
+    ax: float, ay: float, bx: float, by: float,
+    cx: float, cy: float, dx: float, dy: float,
+) -> bool:
+    """Test if segment (a,b) intersects segment (c,d).  All raw floats."""
+    # direction(c,d,a) = cross(a-c, d-c)
+    d1 = (ax - cx) * (dy - cy) - (ay - cy) * (dx - cx)
+    d2 = (bx - cx) * (dy - cy) - (by - cy) * (dx - cx)
+    d3 = (cx - ax) * (by - ay) - (cy - ay) * (bx - ax)
+    d4 = (dx - ax) * (by - ay) - (dy - ay) * (bx - ax)
+    return ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and (
+        (d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)
+    )
 
 
-def collide_player(player: Entity, old_pos: glm.vec2, wall_grid: WallGrid, radius: float = 3.0) -> None:
-    """Push entity out of walls using swept + push-out collision."""
-    nearby = get_nearby_walls(wall_grid, player.pos.x, player.pos.y, 20.0)
-    # First pass: swept collision — snap back if player crossed a wall
-    for wall in nearby:
-        if intersect(old_pos, player.pos, wall[0], wall[1]):
-            player.pos = glm.vec2(old_pos)
+def _point_dist_to_seg_sq(
+    px: float, py: float,
+    x1: float, y1: float, x2: float, y2: float,
+) -> float:
+    """Squared distance from point (px,py) to segment (x1,y1)-(x2,y2)."""
+    vx = x2 - x1
+    vy = y2 - y1
+    dot_vv = vx * vx + vy * vy
+    if dot_vv < 1e-20:
+        dx = px - x1
+        dy = py - y1
+        return dx * dx + dy * dy
+    t = ((px - x1) * vx + (py - y1) * vy) / dot_vv
+    if t < 0:
+        dx = px - x1
+        dy = py - y1
+    elif t > 1:
+        dx = px - x2
+        dy = py - y2
+    else:
+        cx = x1 + vx * t
+        cy = y1 + vy * t
+        dx = px - cx
+        dy = py - cy
+    return dx * dx + dy * dy
+
+
+# ---------------------------------------------------------------------------
+# Public collision functions
+# ---------------------------------------------------------------------------
+
+def collide_player(
+    player: Entity, old_pos: glm.vec2, wall_grid: WallGrid,
+    radius: float = 3.0, push_iters: int = 3,
+) -> None:
+    """Push entity out of walls using swept + push-out collision.
+
+    All inner math uses raw floats — no glm.vec2 allocations in the hot loop.
+    push_iters controls the number of push-out iterations (3 for player, 1 for enemies).
+    """
+    ppx: float = player.pos.x
+    ppy: float = player.pos.y
+    opx: float = old_pos.x
+    opy: float = old_pos.y
+
+    nearby = wall_grid.query(ppx, ppy, 20.0)
+
+    # First pass: swept collision — snap back if crossed a wall
+    for x1, y1, x2, y2 in nearby:
+        if _segments_intersect(opx, opy, ppx, ppy, x1, y1, x2, y2):
+            ppx = opx
+            ppy = opy
             break
-    # Second pass: proximity push-out for wall sliding
-    for _ in range(3):
-        for wall in nearby:
-            dist = point_dist_to_line(player.pos, wall)
-            if dist < radius:
-                p1, p2 = wall
-                edge = p2 - p1
-                n = glm.vec2(-edge.y, edge.x)
-                if glm.length(n) < 1e-10:
+
+    # Second pass: proximity push-out
+    radius_sq = radius * radius
+    for _ in range(push_iters):
+        for x1, y1, x2, y2 in nearby:
+            dist_sq = _point_dist_to_seg_sq(ppx, ppy, x1, y1, x2, y2)
+            if dist_sq < radius_sq:
+                dist = math.sqrt(dist_sq)
+                # Wall normal
+                ex = x2 - x1
+                ey = y2 - y1
+                nx = -ey
+                ny = ex
+                ln = math.sqrt(nx * nx + ny * ny)
+                if ln < 1e-10:
                     continue
-                n = glm.normalize(n)
-                if glm.dot(n, player.pos - p1) < 0:
-                    n = -n
-                player.pos += n * (radius - dist)
+                inv_ln = 1.0 / ln
+                nx *= inv_ln
+                ny *= inv_ln
+                # Orient normal toward player
+                if nx * (ppx - x1) + ny * (ppy - y1) < 0:
+                    nx = -nx
+                    ny = -ny
+                push = radius - dist
+                ppx += nx * push
+                ppy += ny * push
+
+    player.pos.x = ppx
+    player.pos.y = ppy
 
 
-def collide_entity(entity: Bullet | Shell, old_pos: glm.vec2, wall_grid: WallGrid) -> bool:
-    """Check entity movement against walls. Returns True if a wall was hit."""
-    cx = (old_pos.x + entity.pos.x) * 0.5
-    cy = (old_pos.y + entity.pos.y) * 0.5
-    reach = glm.distance(old_pos, entity.pos) * 0.5 + 5.0
-    nearby = get_nearby_walls(wall_grid, cx, cy, reach)
-    for wall in nearby:
-        if intersect(old_pos, entity.pos, wall[0], wall[1]):
-            # Compute wall normal
-            edge = wall[1] - wall[0]
-            n = glm.vec2(-edge.y, edge.x)
-            if glm.length(n) < 1e-10:
-                continue
-            n = glm.normalize(n)
-            if glm.dot(n, entity.vel) > 0:
-                n = -n
+def collide_entity(
+    entity: Bullet | Shell, old_pos: glm.vec2, wall_grid: WallGrid,
+) -> tuple[float, float, float, float] | None:
+    """Check entity movement against walls.
 
-            from portal_shooter.entities.bullet import Bullet
+    Returns the hit wall as (x1, y1, x2, y2) if a collision occurred, None otherwise.
+    """
+    epx: float = entity.pos.x
+    epy: float = entity.pos.y
+    opx: float = old_pos.x
+    opy: float = old_pos.y
 
-            if isinstance(entity, Bullet):
-                # Piercing bullets pass through the first wall hit
-                if entity.piercing:
-                    entity.piercing = False
-                    entity.pos = glm.vec2(old_pos)
-                    return False
+    cx = (opx + epx) * 0.5
+    cy = (opy + epy) * 0.5
+    dx = epx - opx
+    dy = epy - opy
+    reach = math.sqrt(dx * dx + dy * dy) * 0.5 + 5.0
 
-                # Only ricochet at grazing angles (< ~30° from wall surface)
-                incidence = abs(glm.dot(glm.normalize(entity.vel), n))
-                if incidence < 0.5:
-                    entity.vel = entity.vel - n * 2 * glm.dot(entity.vel, n)
-                    entity.pos = glm.vec2(old_pos)
-                else:
-                    entity.life = 0
-                    entity.pos = glm.vec2(old_pos)
+    nearby = wall_grid.query(cx, cy, reach)
+
+    for flat in nearby:
+        x1, y1, x2, y2 = flat
+        if not _segments_intersect(opx, opy, epx, epy, x1, y1, x2, y2):
+            continue
+
+        # Wall normal
+        ex = x2 - x1
+        ey = y2 - y1
+        nx = -ey
+        ny = ex
+        ln = math.sqrt(nx * nx + ny * ny)
+        if ln < 1e-10:
+            continue
+        inv_ln = 1.0 / ln
+        nx *= inv_ln
+        ny *= inv_ln
+        # Orient normal toward incoming velocity
+        vx: float = entity.vel.x
+        vy: float = entity.vel.y
+        if nx * vx + ny * vy > 0:
+            nx = -nx
+            ny = -ny
+
+        from portal_shooter.entities.bullet import Bullet
+
+        if isinstance(entity, Bullet):
+            if entity.piercing:
+                entity.piercing = False
+                entity.pos.x = opx
+                entity.pos.y = opy
+                return None
+
+            # Grazing angle → ricochet
+            vmag = math.sqrt(vx * vx + vy * vy)
+            if vmag > 1e-10:
+                incidence = abs((vx * nx + vy * ny) / vmag)
             else:
-                # Shell: stop
-                entity.vel = glm.vec2()
-                entity.speed = 0.0
-                entity.pos = glm.vec2(old_pos)
-            return True
-    return False
+                incidence = 1.0
+
+            if incidence < 0.5:
+                dot_vn = vx * nx + vy * ny
+                entity.vel.x = vx - nx * 2 * dot_vn
+                entity.vel.y = vy - ny * 2 * dot_vn
+                entity.pos.x = opx
+                entity.pos.y = opy
+            else:
+                entity.life = 0
+                entity.pos.x = opx
+                entity.pos.y = opy
+        else:
+            entity.vel = glm.vec2()
+            entity.speed = 0.0
+            entity.pos.x = opx
+            entity.pos.y = opy
+        return flat
+    return None
 
 
-def collide_grenade(grenade: Grenade, old_pos: glm.vec2, wall_grid: WallGrid) -> bool:
+def collide_grenade(
+    grenade: Grenade, old_pos: glm.vec2, wall_grid: WallGrid,
+) -> bool:
     """Bounce grenade off walls. Returns True if a wall was hit."""
-    cx = (old_pos.x + grenade.pos.x) * 0.5
-    cy = (old_pos.y + grenade.pos.y) * 0.5
-    reach = glm.distance(old_pos, grenade.pos) * 0.5 + 5.0
-    nearby = get_nearby_walls(wall_grid, cx, cy, reach)
-    for wall in nearby:
-        if intersect(old_pos, grenade.pos, wall[0], wall[1]):
-            edge = wall[1] - wall[0]
-            n = glm.vec2(-edge.y, edge.x)
-            if glm.length(n) < 1e-10:
-                continue
-            n = glm.normalize(n)
-            if glm.dot(n, grenade.vel) > 0:
-                n = -n
-            # Reflect velocity and reduce speed
-            grenade.vel = grenade.vel - n * 2 * glm.dot(grenade.vel, n)
-            grenade.speed *= grenade.bounce
-            grenade.pos = glm.vec2(old_pos)
-            return True
+    epx: float = grenade.pos.x
+    epy: float = grenade.pos.y
+    opx: float = old_pos.x
+    opy: float = old_pos.y
+
+    dx = epx - opx
+    dy = epy - opy
+    cx = (opx + epx) * 0.5
+    cy = (opy + epy) * 0.5
+    reach = math.sqrt(dx * dx + dy * dy) * 0.5 + 5.0
+
+    nearby = wall_grid.query(cx, cy, reach)
+
+    for x1, y1, x2, y2 in nearby:
+        if not _segments_intersect(opx, opy, epx, epy, x1, y1, x2, y2):
+            continue
+
+        ex = x2 - x1
+        ey = y2 - y1
+        nx = -ey
+        ny = ex
+        ln = math.sqrt(nx * nx + ny * ny)
+        if ln < 1e-10:
+            continue
+        inv_ln = 1.0 / ln
+        nx *= inv_ln
+        ny *= inv_ln
+        vx: float = grenade.vel.x
+        vy: float = grenade.vel.y
+        if nx * vx + ny * vy > 0:
+            nx = -nx
+            ny = -ny
+        dot_vn = vx * nx + vy * ny
+        grenade.vel.x = vx - nx * 2 * dot_vn
+        grenade.vel.y = vy - ny * 2 * dot_vn
+        grenade.speed *= grenade.bounce
+        grenade.pos.x = opx
+        grenade.pos.y = opy
+        return True
     return False
 
 
@@ -117,11 +249,7 @@ def find_nearest_wall_hit(
     walls: list[Wall],
     max_range: float = 500,
 ) -> tuple[glm.vec2, glm.vec2] | None:
-    """Cast a ray from origin along direction, returning (hit_point, wall_normal).
-
-    The wall normal is oriented toward the origin side.
-    Returns None if no wall is hit within max_range.
-    """
+    """Cast a ray from origin along direction, returning (hit_point, wall_normal)."""
     if glm.length(direction) < 1e-10:
         return None
     ray_dir = glm.normalize(direction)
@@ -139,7 +267,6 @@ def find_nearest_wall_hit(
         if dist_sq < best_dist_sq:
             best_dist_sq = dist_sq
             best_hit = hit
-            # Compute wall normal oriented toward origin
             edge = wall[1] - wall[0]
             n = glm.vec2(-edge.y, edge.x)
             if glm.length(n) < 1e-10:

@@ -7,7 +7,7 @@ from pyglm import glm
 
 from portal_shooter.map.spatial_grid import WallGrid
 from portal_shooter.map.types import Room
-from portal_shooter.util import intersect
+from portal_shooter.map.collision import _segments_intersect
 
 
 class RoomGraph:
@@ -83,13 +83,21 @@ class RoomGraph:
 
 
 def has_line_of_sight(a: glm.vec2, b: glm.vec2, wall_grid: WallGrid) -> bool:
-    """Check if there is a clear line between a and b (no wall intersections)."""
-    cx = (a.x + b.x) * 0.5
-    cy = (a.y + b.y) * 0.5
-    reach = glm.distance(a, b) * 0.5 + 5.0
-    nearby = wall_grid.query(cx, cy, reach)
-    for x1, y1, x2, y2 in nearby:
-        if intersect(a, b, glm.vec2(x1, y1), glm.vec2(x2, y2)):
+    """Check if there is a clear line between a and b (no wall intersections).
+
+    Uses raw-float intersection test — no glm.vec2 allocations.
+    """
+    ax: float = a.x
+    ay: float = a.y
+    bx: float = b.x
+    by: float = b.y
+    cx = (ax + bx) * 0.5
+    cy = (ay + by) * 0.5
+    dx = bx - ax
+    dy = by - ay
+    reach = math.sqrt(dx * dx + dy * dy) * 0.5 + 5.0
+    for x1, y1, x2, y2 in wall_grid.query(cx, cy, reach):
+        if _segments_intersect(ax, ay, bx, by, x1, y1, x2, y2):
             return False
     return True
 
@@ -111,19 +119,22 @@ def steer_toward(
     avoidance = glm.vec2()
     d_norm = glm.normalize(diff)
 
+    px: float = pos.x
+    py: float = pos.y
+    dnx: float = d_norm.x
+    dny: float = d_norm.y
+
     for angle in angles:
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
-        feeler_dir = glm.vec2(
-            d_norm.x * cos_a - d_norm.y * sin_a,
-            d_norm.x * sin_a + d_norm.y * cos_a,
-        )
-        feeler_end = pos + feeler_dir * feeler_len
-        nearby = wall_grid.query(pos.x, pos.y, feeler_len)
-        for x1, y1, x2, y2 in nearby:
-            if intersect(pos, feeler_end, glm.vec2(x1, y1), glm.vec2(x2, y2)):
-                # Push away from this wall direction
-                avoidance -= feeler_dir * speed * 0.5
+        fdx = dnx * cos_a - dny * sin_a
+        fdy = dnx * sin_a + dny * cos_a
+        fex = px + fdx * feeler_len
+        fey = py + fdy * feeler_len
+        for x1, y1, x2, y2 in wall_grid.query(px, py, feeler_len):
+            if _segments_intersect(px, py, fex, fey, x1, y1, x2, y2):
+                avoidance.x -= fdx * speed * 0.5
+                avoidance.y -= fdy * speed * 0.5
                 break
 
     result = desired + avoidance

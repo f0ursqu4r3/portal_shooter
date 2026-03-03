@@ -22,8 +22,11 @@ from portal_shooter.entities import (
     RangedEnemy,
     Shell,
 )
+from portal_shooter.entities.crate import Crate
+from portal_shooter.entities.door import Door, Switch
+from portal_shooter.entities.enemy import _SIGHT_RANGE
 from portal_shooter.entities.entity import Entity
-from portal_shooter.entities.grenade import Grenade, GRENADE_DAMAGE, GRENADE_RADIUS
+from portal_shooter.entities.grenade import GRENADE_DAMAGE, GRENADE_RADIUS, Grenade
 from portal_shooter.entities.pickup import PICKUP_RANGE
 from portal_shooter.hud import HUD
 from portal_shooter.inventory import Inventory, InventoryItem
@@ -34,7 +37,7 @@ from portal_shooter.map.pathfinding import has_line_of_sight
 from portal_shooter.particles import FadeOutParticle, ParticleEmitter
 from portal_shooter.sound import SoundPlayer
 from portal_shooter.sound_propagation import PortalData, compute_sound
-from portal_shooter.util import get_collisions, intersect, point_dist_to_line
+from portal_shooter.util import intersect, point_dist_to_line
 from portal_shooter.weapons import WEAPON_STATS, WeaponKind
 
 pygame.init()
@@ -48,9 +51,12 @@ _WEAPON_KIND_MAP: dict[str, WeaponKind] = {
 
 class _DamageNumber:
     """Floating damage number that drifts upward and fades out."""
+
     __slots__ = ["pos", "text", "age", "color"]
 
-    def __init__(self, pos: glm.vec2, amount: int, color: tuple[int, int, int] = (255, 220, 80)) -> None:
+    def __init__(
+        self, pos: glm.vec2, amount: int, color: tuple[int, int, int] = (255, 220, 80)
+    ) -> None:
         self.pos: glm.vec2 = glm.vec2(pos)
         self.text: str = str(amount)
         self.age: float = 0.0
@@ -102,7 +108,7 @@ class Game:
 
         self.portals: list[Portal | None] = [None, None]
 
-        self.owned_weapons: set[WeaponKind] = {WeaponKind.PISTOL}
+        self.owned_weapons: set[WeaponKind] = {WeaponKind.PISTOL, WeaponKind.PORTAL_GUN}
 
         self.pickups: list[Pickup] = []
 
@@ -116,6 +122,7 @@ class Game:
             WeaponKind.SHOTGUN: 0,
             WeaponKind.SMG: 0,
             WeaponKind.RIFLE: 0,
+            WeaponKind.PORTAL_GUN: 0,
         }
 
         self.hud: HUD = HUD()
@@ -136,11 +143,23 @@ class Game:
         )
         self._layer_size: tuple[int, int] = self.screen.get_size()
 
+        # Visibility cache
+        self._vis_cache: list[tuple[float, float]] = []
+        self._vis_cache_pos: tuple[float, float] = (0.0, 0.0)
+
         # Enemies
         self.enemies: list[Enemy] = []
 
         # Grenades
         self.grenades: list[Grenade] = []
+
+        # Destructible crates
+        self.crates: list[Crate] = []
+        self._crate_wall_lookup: dict[tuple[float, float, float, float], Crate] = {}
+
+        # Doors and switches
+        self.doors: list[Door] = []
+        self.switches: list[Switch] = []
 
         # Muzzle flash
         self._muzzle_flash_timer: float = 0.0
@@ -152,6 +171,10 @@ class Game:
 
         # Damage numbers
         self._damage_numbers: list[_DamageNumber] = []
+
+        # Reload state
+        self._reloading: bool = False
+        self._reload_timer: float = 0.0
 
         # Death / pause state
         self._dead: bool = False
@@ -195,16 +218,41 @@ class Game:
                 if pk in (PickupKind.WEAPON, PickupKind.AMMO)
                 else None
             )
-            self.pickups.append(Pickup(pos, pk, weapon_kind=wk))
+            qty = WEAPON_STATS[wk].pickup_ammo if pk == PickupKind.AMMO and wk else 1
+            self.pickups.append(Pickup(pos, pk, weapon_kind=wk, quantity=qty))
 
         # Level setup: key + exit
         self.level.setup_floor(self.game_map.rooms)
         # Place key pickup
-        self.pickups.append(
-            Pickup(glm.vec2(self.level.key_pos), PickupKind.KEY)
-        )
+        self.pickups.append(Pickup(glm.vec2(self.level.key_pos), PickupKind.KEY))
         # Place exit door
         self.exit_door = ExitDoor(glm.vec2(self.level.exit_pos))
+
+        # Spawn crates and register their walls
+        self.crates = []
+        self._crate_wall_lookup = {}
+        crate_walls_to_add: list[tuple[glm.vec2, glm.vec2]] = []
+        for cpos in self.game_map.crate_positions:
+            crate = Crate(cpos)
+            self.crates.append(crate)
+            crate_walls_to_add.extend(crate.walls)
+            for key in crate._wall_keys:
+                self._crate_wall_lookup[key] = crate
+        if crate_walls_to_add:
+            self.game_map.add_walls(crate_walls_to_add)
+
+        # Spawn doors and switches
+        self.doors = []
+        self.switches = []
+        door_walls_to_add: list[tuple[glm.vec2, glm.vec2]] = []
+        for door_p1, door_p2, switch_pos in self.game_map.door_positions:
+            door = Door(door_p1, door_p2)
+            switch = Switch(switch_pos, door, color=door.color)
+            self.doors.append(door)
+            self.switches.append(switch)
+            door_walls_to_add.append(door.wall)
+        if door_walls_to_add:
+            self.game_map.add_walls(door_walls_to_add)
 
         # Spawn enemies
         self.spawn_enemies_for_rooms()
@@ -229,9 +277,7 @@ class Game:
             count = max(1, int(base_count * count_mul))
 
             for _ in range(count):
-                offset = glm.vec2(
-                    random.uniform(-20, 20), random.uniform(-20, 20)
-                )
+                offset = glm.vec2(random.uniform(-20, 20), random.uniform(-20, 20))
                 pos = room.center + offset
 
                 enemy: Enemy
@@ -252,6 +298,13 @@ class Game:
                 ]
                 self.enemies.append(enemy)
 
+    def _destroy_crate(self, crate: Crate) -> None:
+        """Remove a crate's walls from the map and clean up lookup."""
+        self.game_map.remove_walls(crate.walls)
+        for key in crate._wall_keys:
+            self._crate_wall_lookup.pop(key, None)
+        self._vis_cache = []  # invalidate visibility cache
+
     def _restart_game(self) -> None:
         """Reset entire game state for a new run."""
         self._dead = False
@@ -261,11 +314,13 @@ class Game:
         self.player.invincible = False
         self.player.is_dashing = False
         self.time_scale = 1.0
-        self.owned_weapons = {WeaponKind.PISTOL}
+        self.owned_weapons = {WeaponKind.PISTOL, WeaponKind.PORTAL_GUN}
         self.current_weapon = WeaponKind.PISTOL
         self.ammo = {k: 0 for k in WeaponKind}
         self.speed_buff_timer = 0
         self.shot_timer = 0
+        self._reloading = False
+        self._reload_timer = 0.0
         self.inventory = Inventory()
         self._impact_emitters.clear()
         self._damage_numbers.clear()
@@ -330,7 +385,27 @@ class Game:
                 self.sound_player.play("Step1", volume=0.2)
                 self.player_walk_timer = 0
 
-        if pygame.mouse.get_pressed()[0] and not self.shot_timer and not self.inventory_ui.is_open:
+        _inv_blocks = self.inventory_ui.is_open and self.inventory_ui.is_over_panel(
+            *pygame.mouse.get_pos()
+        )
+        mouse_buttons = pygame.mouse.get_pressed()
+
+        if self.current_weapon == WeaponKind.PORTAL_GUN:
+            # Portal gun: LMB fires orange (index 0), RMB fires blue (index 1)
+            for btn, idx in ((0, 0), (2, 1)):
+                if mouse_buttons[btn] and not self.shot_timer and not _inv_blocks:
+                    aim_dir = self.mpos_world - self.player.pos
+                    hit = self.game_map.find_nearest_wall_hit(self.player.pos, aim_dir)
+                    if hit:
+                        color = (255, 127, 0) if idx == 0 else (41, 174, 255)
+                        self.portals[idx] = Portal(hit[0] + hit[1] * 2, hit[1], color)
+                    self.shot_timer = WEAPON_STATS[WeaponKind.PORTAL_GUN].fire_rate
+        elif (
+            mouse_buttons[0]
+            and not self.shot_timer
+            and not _inv_blocks
+            and not self._reloading
+        ):
             stats = WEAPON_STATS[self.current_weapon]
 
             # Check ammo
@@ -338,7 +413,7 @@ class Game:
                 stats.ammo_per_shot
                 and self.ammo[self.current_weapon] < stats.ammo_per_shot
             ):
-                pass  # No ammo — don't fire
+                self._start_reload()  # Auto-reload on empty
             else:
                 fire_vec = glm.normalize(self.mpos_world - self.player.pos)
 
@@ -367,9 +442,7 @@ class Game:
 
                 # Muzzle flash
                 self._muzzle_flash_timer = 0.06
-                self._muzzle_flash_pos = glm.vec2(
-                    self.player.pos + fire_vec * 12
-                )
+                self._muzzle_flash_pos = glm.vec2(self.player.pos + fire_vec * 12)
                 self._muzzle_flash_color = stats.color
 
                 eject_vec = glm.vec2(-fire_vec.y, fire_vec.x)
@@ -434,22 +507,15 @@ class Game:
                     continue  # consumed by inventory
 
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_i:
+                if event.key == pygame.K_TAB:
                     self.inventory_ui.toggle()
                     pygame.mouse.set_visible(self.inventory_ui.is_open)
-                elif event.key in (pygame.K_q, pygame.K_e):
-                    aim_dir = self.mpos_world - self.player.pos
-                    hit = self.game_map.find_nearest_wall_hit(self.player.pos, aim_dir)
-                    if hit:
-                        idx = 0 if event.key == pygame.K_q else 1
-                        color = (255, 127, 0) if idx == 0 else (41, 174, 255)
-                        self.portals[idx] = Portal(hit[0] + hit[1] * 2, hit[1], color)
                 elif event.key == pygame.K_z:
                     self.portals[0] = None
                 elif event.key == pygame.K_x:
                     self.portals[1] = None
 
-                elif event.key == pygame.K_f:
+                elif event.key == pygame.K_e:
                     if self.inventory_ui.handle_key(event.key, self):
                         pass  # consumed by inventory UI
                     elif self._nearest_pickup is not None:
@@ -459,6 +525,21 @@ class Game:
                             self.level.has_key = True
                             if self.exit_door is not None:
                                 self.exit_door.active = True
+                            self.sound_player.play("Portal1", volume=0.5)
+                            self.pickups.remove(pickup)
+                            self._nearest_pickup = None
+                        elif pickup.kind == PickupKind.WEAPON:
+                            wk = pickup.weapon_kind
+                            if wk is not None:
+                                self.owned_weapons.add(wk)
+                                stats = WEAPON_STATS[wk]
+                                self.ammo[wk] = (
+                                    stats.magazine_size
+                                    if stats.magazine_size > 0
+                                    else 0
+                                )
+                                self.current_weapon = wk
+                                self._reloading = False
                             self.sound_player.play("Portal1", volume=0.5)
                             self.pickups.remove(pickup)
                             self._nearest_pickup = None
@@ -478,20 +559,29 @@ class Game:
                 elif event.key == pygame.K_SPACE:
                     print(f"{self.player.health=} {self.clock.get_fps()=}")
 
-                elif not self.inventory_ui.is_open and event.key in (
-                    pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4
+                elif event.key == pygame.K_r:
+                    self._start_reload()
+
+                elif event.key in (
+                    pygame.K_1,
+                    pygame.K_2,
+                    pygame.K_3,
+                    pygame.K_4,
+                    pygame.K_5,
                 ):
                     owned = sorted(self.owned_weapons)
                     slot = event.key - pygame.K_1
                     if slot < len(owned):
                         self.current_weapon = owned[slot]
+                        self._reloading = False
 
-            elif event.type == pygame.MOUSEWHEEL and not self.inventory_ui.is_open:
+            elif event.type == pygame.MOUSEWHEEL:
                 owned = sorted(self.owned_weapons)
                 if len(owned) > 1:
                     idx = owned.index(self.current_weapon)
                     idx = (idx + event.y) % len(owned)
                     self.current_weapon = owned[idx]
+                    self._reloading = False
 
     def _throw_grenade(self) -> None:
         """Find a grenade in inventory and throw it toward cursor."""
@@ -526,6 +616,12 @@ class Game:
         dt = tdt * self.time_scale
         self.shot_timer = max(0, self.shot_timer - dt)
 
+        # Reload timer
+        if self._reloading:
+            self._reload_timer -= dt
+            if self._reload_timer <= 0:
+                self._finish_reload()
+
         self.player_walk_timer += dt
 
         old_pos = glm.vec2(self.player.pos)
@@ -534,6 +630,14 @@ class Game:
         self.camera.update(dt, self.screen_size)
 
         self.do_portal(self.player)
+
+        # Check switches
+        for switch in self.switches:
+            if switch.check_activate(self.player.pos):
+                # Door opened — remove its wall
+                self.game_map.remove_walls([switch.door.wall])
+                self.sound_player.play("Portal1", volume=0.4)
+                self._vis_cache = []  # invalidate visibility cache
 
         # Entity updates (bullets + shells)
         dead: set[Bullet | Shell] = set()
@@ -545,9 +649,17 @@ class Game:
                 dead.add(entity)
                 continue
 
-            if self.game_map.collide_entity(entity, old_pos):
-                self.play_spatial("Ricochet", float(entity.pos.x), float(entity.pos.y), random_variant=True)
-                self._alert_enemies_at(float(entity.pos.x), float(entity.pos.y), loudness=0.5)
+            hit_wall = self.game_map.collide_entity(entity, old_pos)
+            if hit_wall:
+                self.play_spatial(
+                    "Ricochet",
+                    float(entity.pos.x),
+                    float(entity.pos.y),
+                    random_variant=True,
+                )
+                self._alert_enemies_at(
+                    float(entity.pos.x), float(entity.pos.y), loudness=0.5
+                )
                 # Wall impact sparks
                 spark = ParticleEmitter(
                     pos=glm.vec2(entity.pos),
@@ -559,11 +671,24 @@ class Game:
                 )
                 spark.burst(random.randint(3, 6))
                 self._impact_emitters.append(spark)
+                # Check if a crate was hit
+                crate = self._crate_wall_lookup.get(hit_wall)
+                if crate is not None and crate.alive:
+                    from portal_shooter.entities.bullet import Bullet as _Bullet
+
+                    bullet_dmg = entity.damage if isinstance(entity, _Bullet) else 0
+                    if bullet_dmg > 0:
+                        crate.take_damage(bullet_dmg)
+                        if not crate.alive:
+                            self._destroy_crate(crate)
 
             self.do_portal(entity)
 
         # Enemy bullets hit player
-        for collision in get_collisions(self.player, self.enemy_bullets):
+        player_rect = self.player.rect
+        for collision in [
+            b for b in self.enemy_bullets if b.rect.colliderect(player_rect)
+        ]:
             self._apply_damage(collision.damage)
             dead.add(collision)
             if self.player.health > 0:
@@ -610,6 +735,21 @@ class Game:
         if self._muzzle_flash_timer > 0:
             self._muzzle_flash_timer -= dt
 
+        # Update doors and switches
+        for door in self.doors:
+            door.update(dt)
+        for switch in self.switches:
+            switch.update(dt)
+
+        # Update crates (for particle emitters on dead crates)
+        dead_crates: list[Crate] = []
+        for crate in self.crates:
+            crate.update(dt)
+            if not crate.alive and not crate.emitter.particles:
+                dead_crates.append(crate)
+        for crate in dead_crates:
+            self.crates.remove(crate)
+
         # Update impact emitters + damage numbers
         for emitter in self._impact_emitters:
             emitter.update(dt)
@@ -632,6 +772,11 @@ class Game:
 
         dead_enemies: list[Enemy] = []
 
+        player_px: float = self.player.pos.x
+        player_py: float = self.player.pos.y
+        # Distance beyond which enemies get a lightweight update (no LOS/collision/portal)
+        _ACTIVE_RANGE_SQ: float = 250.0 * 250.0
+
         for enemy in self.enemies:
             if not enemy.alive:
                 enemy.update(dt)
@@ -640,14 +785,41 @@ class Game:
                     dead_enemies.append(enemy)
                 continue
 
-            # LOS check — only within sight range
-            from portal_shooter.entities.enemy import _SIGHT_RANGE
-            dist_to_player = glm.distance(enemy.pos, self.player.pos)
-            los = (
-                dist_to_player <= _SIGHT_RANGE
-                and has_line_of_sight(
-                    enemy.pos, self.player.pos, self.game_map._wall_grid
-                )
+            # Squared distance to player (cheap — no sqrt)
+            epx: float = enemy.pos.x
+            epy: float = enemy.pos.y
+            ddx = epx - player_px
+            ddy = epy - player_py
+            dist_sq = ddx * ddx + ddy * ddy
+
+            # Far enemies: lightweight update (move + timers only, no LOS/collision)
+            far = dist_sq > _ACTIVE_RANGE_SQ
+            if far:
+                enemy.update(dt)
+                # Still check bullet hits on far enemies
+                enemy_rect = enemy.rect
+                for collision in [
+                    b for b in self.bullets if b.rect.colliderect(enemy_rect)
+                ]:
+                    knockback = (
+                        glm.normalize(collision.vel) * 30 if collision.vel else None
+                    )
+                    enemy.take_damage(
+                        collision.damage, knockback, source_pos=self.player.pos
+                    )
+                    collision.life = 0
+                    self._damage_numbers.append(
+                        _DamageNumber(
+                            enemy.pos
+                            + glm.vec2(random.uniform(-4, 4), random.uniform(-6, -2)),
+                            collision.damage,
+                        )
+                    )
+                continue
+
+            dist_to_player = math.sqrt(dist_sq)
+            los = dist_to_player <= _SIGHT_RANGE and has_line_of_sight(
+                enemy.pos, self.player.pos, self.game_map._wall_grid
             )
 
             # Re-path every 0.5s — only if enemy is aware (has a last-known pos)
@@ -676,9 +848,7 @@ class Game:
                     enemy.target_waypoint = None
 
             # AI update
-            wants_fire = enemy.update_ai(
-                self.player.pos, los, enemy.target_waypoint
-            )
+            wants_fire = enemy.update_ai(self.player.pos, los, enemy.target_waypoint)
 
             # Ranged enemy firing
             if wants_fire:
@@ -694,13 +864,20 @@ class Game:
                 self.enemy_bullets.append(bullet)
                 self.play_spatial("Shoot1", float(enemy.pos.x), float(enemy.pos.y), 0.3)
 
-            old_pos = glm.vec2(enemy.pos)
+            # Save old pos as raw floats to avoid glm.vec2 allocation
+            old_x, old_y = enemy.pos.x, enemy.pos.y
             enemy.update(dt)
-            self.game_map.collide_player(enemy, old_pos, radius=3.0)
+            # Only run collision if enemy actually moved
+            if enemy.pos.x != old_x or enemy.pos.y != old_y:
+                _old_pos = glm.vec2(old_x, old_y)
+                self.game_map.collide_player(enemy, _old_pos, radius=3.0, push_iters=1)
             self.do_portal(enemy)
 
             # Player bullets hit enemies
-            for collision in get_collisions(enemy, self.bullets):
+            enemy_rect = enemy.rect
+            for collision in [
+                b for b in self.bullets if b.rect.colliderect(enemy_rect)
+            ]:
                 knockback = glm.normalize(collision.vel) * 30 if collision.vel else None
                 enemy.take_damage(
                     collision.damage, knockback, source_pos=self.player.pos
@@ -718,7 +895,7 @@ class Game:
                 isinstance(enemy, MeleeEnemy)
                 and enemy.alive
                 and enemy._attack_timer <= 0
-                and enemy.rect.colliderect(self.player.rect)
+                and enemy_rect.colliderect(self.player.rect)
             ):
                 self._apply_damage(enemy.damage)
                 enemy._attack_timer = enemy.attack_cooldown
@@ -750,8 +927,68 @@ class Game:
             if random.random() < chance:
                 pk = PickupKind(kind_str)
                 wk = _WEAPON_KIND_MAP.get(weapon_sub or "") if weapon_sub else None
+                qty = (
+                    WEAPON_STATS[wk].pickup_ammo if pk == PickupKind.AMMO and wk else 1
+                )
                 offset = glm.vec2(random.uniform(-5, 5), random.uniform(-5, 5))
-                self.pickups.append(Pickup(enemy.pos + offset, pk, weapon_kind=wk))
+                self.pickups.append(
+                    Pickup(enemy.pos + offset, pk, weapon_kind=wk, quantity=qty)
+                )
+
+    def _start_reload(self) -> None:
+        """Begin reloading the current weapon if conditions are met."""
+        stats = WEAPON_STATS[self.current_weapon]
+        if (
+            stats.magazine_size <= 0
+            or self._reloading
+            or self.ammo[self.current_weapon] >= stats.magazine_size
+            or self._count_reserve_ammo(self.current_weapon) <= 0
+        ):
+            return
+        self._reloading = True
+        self._reload_timer = stats.reload_time
+
+    def _finish_reload(self) -> None:
+        """Complete reload: consume reserve ammo and fill magazine."""
+        self._reloading = False
+        wk = self.current_weapon
+        stats = WEAPON_STATS[wk]
+        rounds_needed = stats.magazine_size - self.ammo[wk]
+        available = self._count_reserve_ammo(wk)
+        load = min(rounds_needed, available)
+        if load > 0:
+            self._consume_reserve_ammo(wk, load)
+            self.ammo[wk] += load
+            self.sound_player.play("Portal1", volume=0.4)
+
+    def _count_reserve_ammo(self, wk: WeaponKind) -> int:
+        """Sum all ammo item quantities in inventory matching weapon_kind."""
+        total = 0
+        for slot in self.inventory.slots:
+            if (
+                slot is not None
+                and slot.kind == PickupKind.AMMO
+                and slot.weapon_kind == wk
+            ):
+                total += slot.quantity
+        return total
+
+    def _consume_reserve_ammo(self, wk: WeaponKind, amount: int) -> None:
+        """Remove `amount` rounds from matching inventory ammo items."""
+        remaining = amount
+        for i, slot in enumerate(self.inventory.slots):
+            if remaining <= 0:
+                break
+            if (
+                slot is not None
+                and slot.kind == PickupKind.AMMO
+                and slot.weapon_kind == wk
+            ):
+                take = min(slot.quantity, remaining)
+                slot.quantity -= take
+                remaining -= take
+                if slot.quantity <= 0:
+                    self.inventory.slots[i] = None
 
     def _update_grenades(self, dt: float) -> None:
         """Update grenades: movement, bounce, portal, detonation."""
@@ -799,6 +1036,19 @@ class Game:
                         _DamageNumber(enemy.pos + offset, damage, color=(255, 180, 40))
                     )
 
+        # Damage crates in blast radius
+        for crate in self.crates:
+            if not crate.alive:
+                continue
+            dist = glm.distance(grenade.pos, crate.pos)
+            if dist < GRENADE_RADIUS:
+                falloff = 1.0 - dist / GRENADE_RADIUS
+                damage = int(GRENADE_DAMAGE * falloff)
+                if damage > 0:
+                    crate.take_damage(damage)
+                    if not crate.alive:
+                        self._destroy_crate(crate)
+
         # Self-damage to player (50% reduced)
         player_dist = glm.distance(grenade.pos, self.player.pos)
         if player_dist < GRENADE_RADIUS:
@@ -844,24 +1094,38 @@ class Game:
         n1x, n1y = float(p1.normal.x), float(p1.normal.y)
         return (
             PortalData(
-                float(p0.pos.x) - n0x * 2, float(p0.pos.y) - n0y * 2,
-                n0x, n0y,
-                float(p0.pos.x), float(p0.pos.y),
-                float(p0.line[0].x), float(p0.line[0].y),
-                float(p0.line[1].x), float(p0.line[1].y),
+                float(p0.pos.x) - n0x * 2,
+                float(p0.pos.y) - n0y * 2,
+                n0x,
+                n0y,
+                float(p0.pos.x),
+                float(p0.pos.y),
+                float(p0.line[0].x),
+                float(p0.line[0].y),
+                float(p0.line[1].x),
+                float(p0.line[1].y),
             ),
             PortalData(
-                float(p1.pos.x) - n1x * 2, float(p1.pos.y) - n1y * 2,
-                n1x, n1y,
-                float(p1.pos.x), float(p1.pos.y),
-                float(p1.line[0].x), float(p1.line[0].y),
-                float(p1.line[1].x), float(p1.line[1].y),
+                float(p1.pos.x) - n1x * 2,
+                float(p1.pos.y) - n1y * 2,
+                n1x,
+                n1y,
+                float(p1.pos.x),
+                float(p1.pos.y),
+                float(p1.line[0].x),
+                float(p1.line[0].y),
+                float(p1.line[1].x),
+                float(p1.line[1].y),
             ),
         )
 
     def play_spatial(
-        self, sound_name: str, source_x: float, source_y: float,
-        base_volume: float = 1.0, random_variant: bool = False,
+        self,
+        sound_name: str,
+        source_x: float,
+        source_y: float,
+        base_volume: float = 1.0,
+        random_variant: bool = False,
     ) -> None:
         aim = self.mpos_world - self.player.pos
         mag = float((aim.x**2 + aim.y**2) ** 0.5)
@@ -874,9 +1138,12 @@ class Game:
 
         assert self.game_map._wall_grid is not None
         volume, pan = compute_sound(
-            float(self.player.pos.x), float(self.player.pos.y),
-            fx, fy,
-            source_x, source_y,
+            float(self.player.pos.x),
+            float(self.player.pos.y),
+            fx,
+            fy,
+            source_x,
+            source_y,
             self.game_map._wall_grid,
             portal_data,
         )
@@ -909,9 +1176,12 @@ class Game:
                 continue
 
             vol, _ = compute_sound(
-                float(enemy.pos.x), float(enemy.pos.y),
-                1.0, 0.0,  # facing doesn't affect volume
-                source_x, source_y,
+                float(enemy.pos.x),
+                float(enemy.pos.y),
+                1.0,
+                0.0,  # facing doesn't affect volume
+                source_x,
+                source_y,
                 self.game_map._wall_grid,
                 portal_data,
             )
@@ -945,12 +1215,19 @@ class Game:
         self.screen.fill((10, 8, 12))
         self.game_map.draw(self.screen, cam_offset)
 
-        # Compute visibility polygon
+        # Compute visibility polygon (cached — recompute only when player moves >1px)
         cox, coy = cam_offset.x, cam_offset.y
         assert self.game_map._wall_grid is not None
-        vis_points = compute_visibility(
-            self.player.pos, self.game_map._wall_grid, max_dist=200
-        )
+        px, py = self.player.pos.x, self.player.pos.y
+        cx, cy = self._vis_cache_pos
+        dx = px - cx
+        dy = py - cy
+        if dx * dx + dy * dy > 1.0 or not self._vis_cache:
+            self._vis_cache = compute_visibility(
+                self.player.pos, self.game_map._wall_grid, max_dist=200
+            )
+            self._vis_cache_pos = (px, py)
+        vis_points = self._vis_cache
 
         screen_pts: list[tuple[int, int]] = []
         if len(vis_points) >= 3:
@@ -964,36 +1241,86 @@ class Game:
         # Draw entities onto layer
         self.layer.fill((0, 0, 0, 0))
 
+        # Viewport bounds for off-screen culling (world coords, with margin)
+        sw, sh = self._layer_size
+        vl = cox - 16.0
+        vt = coy - 16.0
+        vr = cox + sw + 16.0
+        vb = coy + sh + 16.0
+
         for entity in self.entities:
-            entity.draw(self.layer, cam_offset)
+            ex = entity.pos.x
+            ey = entity.pos.y
+            if vl <= ex <= vr and vt <= ey <= vb:
+                entity.draw(self.layer, cam_offset)
 
         for pickup in self.pickups:
-            pickup.draw(self.layer, cam_offset)
+            ex = pickup.pos.x
+            ey = pickup.pos.y
+            if vl <= ex <= vr and vt <= ey <= vb:
+                pickup.draw(self.layer, cam_offset)
+
+        # Draw switches (on floor, below everything)
+        for switch in self.switches:
+            ex = switch.pos.x
+            ey = switch.pos.y
+            if vl <= ex <= vr and vt <= ey <= vb:
+                switch.draw(self.layer, cam_offset)
+
+        # Draw doors
+        for door in self.doors:
+            if not door.is_open:
+                ex = door.pos.x
+                ey = door.pos.y
+                if vl <= ex <= vr and vt <= ey <= vb:
+                    door.draw(self.layer, cam_offset)
+
+        # Draw crates
+        for crate in self.crates:
+            ex = crate.pos.x
+            ey = crate.pos.y
+            if vl <= ex <= vr and vt <= ey <= vb:
+                crate.draw(self.layer, cam_offset)
 
         # Draw impact sparks
         for emitter in self._impact_emitters:
-            emitter.draw(self.layer, cam_offset)
+            ex = emitter.pos.x
+            ey = emitter.pos.y
+            if vl <= ex <= vr and vt <= ey <= vb:
+                emitter.draw(self.layer, cam_offset)
 
         # Draw enemies
         for enemy in self.enemies:
-            enemy.draw(self.layer, cam_offset)
+            ex = enemy.pos.x
+            ey = enemy.pos.y
+            if vl <= ex <= vr and vt <= ey <= vb:
+                enemy.draw(self.layer, cam_offset)
 
         # Draw grenades
         for grenade in self.grenades:
-            grenade.draw(self.layer, cam_offset)
+            ex = grenade.pos.x
+            ey = grenade.pos.y
+            if vl <= ex <= vr and vt <= ey <= vb:
+                grenade.draw(self.layer, cam_offset)
 
         # Draw damage numbers
         for dmg in self._damage_numbers:
-            alpha = max(0, int(255 * (1.0 - dmg.age / 0.8)))
-            r, g, b = dmg.color
-            txt = self._pickup_font.render(dmg.text, False, (r, g, b))
-            txt.set_alpha(alpha)
-            dp = dmg.pos - cam_offset
-            self.layer.blit(txt, (int(dp.x) - txt.get_width() // 2, int(dp.y)))
+            ex = dmg.pos.x
+            ey = dmg.pos.y
+            if vl <= ex <= vr and vt <= ey <= vb:
+                alpha = max(0, int(255 * (1.0 - dmg.age / 0.8)))
+                r, g, b = dmg.color
+                txt = self._pickup_font.render(dmg.text, False, (r, g, b))
+                txt.set_alpha(alpha)
+                dp = dmg.pos - cam_offset
+                self.layer.blit(txt, (int(dp.x) - txt.get_width() // 2, int(dp.y)))
 
         # Draw exit door
         if self.exit_door is not None:
-            self.exit_door.draw(self.layer, cam_offset)
+            ex = self.exit_door.pos.x
+            ey = self.exit_door.pos.y
+            if vl <= ex <= vr and vt <= ey <= vb:
+                self.exit_door.draw(self.layer, cam_offset)
 
         self.player.aim_target = self.mpos_world
         self.player.draw(self.layer, cam_offset)
@@ -1008,7 +1335,9 @@ class Game:
             cb = min(255, b + 100)
             pygame.draw.circle(self.layer, (cr, cg, cb, 220), (int(fp.x), int(fp.y)), 2)
             # Outer glow
-            pygame.draw.circle(self.layer, (255, 255, 200, 100), (int(fp.x), int(fp.y)), 4)
+            pygame.draw.circle(
+                self.layer, (255, 255, 200, 100), (int(fp.x), int(fp.y)), 4
+            )
 
         for portal in self.portals:
             if portal:
@@ -1037,36 +1366,62 @@ class Game:
         pygame.display.flip()
 
     def _draw_death_screen(self) -> None:
-        overlay = pygame.Surface(self.window_size, pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 120))
-        self.window.blit(overlay, (0, 0))
+        # Lazy-init cached surfaces
+        if not hasattr(self, "_death_overlay"):
+            self._death_overlay = pygame.Surface(self.window_size, pygame.SRCALPHA)
+            self._death_overlay.fill((0, 0, 0, 120))
+            self._death_title = self._death_font.render(
+                "GAME OVER", False, (200, 40, 40)
+            )
+            self._death_restart = self._ui_font.render(
+                "R to Restart", False, (160, 160, 160)
+            )
+            self._death_floor_text: pygame.Surface | None = None
+            self._death_floor_val: int = -1
 
+        self.window.blit(self._death_overlay, (0, 0))
         cx, cy = int(self.window_size.x) // 2, int(self.window_size.y) // 2
-        title = self._death_font.render("GAME OVER", False, (200, 40, 40))
-        self.window.blit(title, (cx - title.get_width() // 2, cy - 40))
-
-        floor_text = self._ui_font.render(
-            f"Floor {self.level.floor}", False, (180, 180, 180)
+        self.window.blit(
+            self._death_title, (cx - self._death_title.get_width() // 2, cy - 40)
         )
-        self.window.blit(floor_text, (cx - floor_text.get_width() // 2, cy + 10))
 
-        restart = self._ui_font.render("R to Restart", False, (160, 160, 160))
-        self.window.blit(restart, (cx - restart.get_width() // 2, cy + 40))
+        if self.level.floor != self._death_floor_val:
+            self._death_floor_val = self.level.floor
+            self._death_floor_text = self._ui_font.render(
+                f"Floor {self.level.floor}", False, (180, 180, 180)
+            )
+        assert self._death_floor_text is not None
+        self.window.blit(
+            self._death_floor_text,
+            (cx - self._death_floor_text.get_width() // 2, cy + 10),
+        )
+        self.window.blit(
+            self._death_restart, (cx - self._death_restart.get_width() // 2, cy + 40)
+        )
 
     def _draw_pause_screen(self) -> None:
-        overlay = pygame.Surface(self.window_size, pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 140))
-        self.window.blit(overlay, (0, 0))
+        if not hasattr(self, "_pause_overlay"):
+            self._pause_overlay = pygame.Surface(self.window_size, pygame.SRCALPHA)
+            self._pause_overlay.fill((0, 0, 0, 140))
+            self._pause_title = self._death_font.render(
+                "PAUSED", False, (180, 180, 180)
+            )
+            self._pause_resume = self._ui_font.render(
+                "ESC to Resume", False, (140, 140, 140)
+            )
+            self._pause_quit = self._ui_font.render("Q to Quit", False, (140, 140, 140))
 
+        self.window.blit(self._pause_overlay, (0, 0))
         cx, cy = int(self.window_size.x) // 2, int(self.window_size.y) // 2
-        title = self._death_font.render("PAUSED", False, (180, 180, 180))
-        self.window.blit(title, (cx - title.get_width() // 2, cy - 30))
-
-        resume = self._ui_font.render("ESC to Resume", False, (140, 140, 140))
-        self.window.blit(resume, (cx - resume.get_width() // 2, cy + 20))
-
-        quit_text = self._ui_font.render("Q to Quit", False, (140, 140, 140))
-        self.window.blit(quit_text, (cx - quit_text.get_width() // 2, cy + 46))
+        self.window.blit(
+            self._pause_title, (cx - self._pause_title.get_width() // 2, cy - 30)
+        )
+        self.window.blit(
+            self._pause_resume, (cx - self._pause_resume.get_width() // 2, cy + 20)
+        )
+        self.window.blit(
+            self._pause_quit, (cx - self._pause_quit.get_width() // 2, cy + 46)
+        )
 
     def _draw_pickup_tooltip(
         self, surface: pygame.Surface, pickup: Pickup, cam_offset: glm.vec2
@@ -1074,7 +1429,7 @@ class Game:
         bob = math.sin(pickup.age * 3) * 2
         screen_pos = pickup.pos - cam_offset + glm.vec2(0, bob)
 
-        label = f"F: {pickup.display_name}"
+        label = f"E: {pickup.display_name}"
         if pickup.quantity > 1:
             label += f" x{pickup.quantity}"
         text_surf = self._pickup_font.render(label, False, (220, 220, 220))
