@@ -42,6 +42,20 @@ from portal_shooter.weapons import WEAPON_STATS, WeaponKind
 
 pygame.init()
 
+def _point_in_polygon(px: float, py: float, verts: list[glm.vec2]) -> bool:
+    """Ray-casting point-in-polygon test."""
+    n = len(verts)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = verts[i].x, verts[i].y
+        xj, yj = verts[j].x, verts[j].y
+        if (yi > py) != (yj > py) and px < (xj - xi) * (py - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
 _WEAPON_KIND_MAP: dict[str, WeaponKind] = {
     "shotgun": WeaponKind.SHOTGUN,
     "smg": WeaponKind.SMG,
@@ -108,7 +122,7 @@ class Game:
 
         self.portals: list[Portal | None] = [None, None]
 
-        self.owned_weapons: set[WeaponKind] = {WeaponKind.PISTOL, WeaponKind.PORTAL_GUN}
+        self.owned_weapons: set[WeaponKind] = {WeaponKind.PISTOL}
 
         self.pickups: list[Pickup] = []
 
@@ -221,6 +235,16 @@ class Game:
             qty = WEAPON_STATS[wk].pickup_ammo if pk == PickupKind.AMMO and wk else 1
             self.pickups.append(Pickup(pos, pk, weapon_kind=wk, quantity=qty))
 
+        # Portal gun pickup in spawn room
+        if WeaponKind.PORTAL_GUN not in self.owned_weapons:
+            self.pickups.append(
+                Pickup(
+                    self.game_map.spawn_pos + glm.vec2(15, 0),
+                    PickupKind.WEAPON,
+                    weapon_kind=WeaponKind.PORTAL_GUN,
+                )
+            )
+
         # Level setup: key + exit
         self.level.setup_floor(self.game_map.rooms)
         # Place key pickup
@@ -277,8 +301,25 @@ class Game:
             count = max(1, int(base_count * count_mul))
 
             for _ in range(count):
-                offset = glm.vec2(random.uniform(-20, 20), random.uniform(-20, 20))
-                pos = room.center + offset
+                # Try random positions inside the room polygon
+                pos: glm.vec2 | None = None
+                for _attempt in range(20):
+                    candidate = room.center + glm.vec2(
+                        random.uniform(-20, 20), random.uniform(-20, 20)
+                    )
+                    if _point_in_polygon(
+                        float(candidate.x), float(candidate.y), room.vertices
+                    ):
+                        pos = candidate
+                        break
+                if pos is None:
+                    # Fallback: use center only if inside
+                    if _point_in_polygon(
+                        float(room.center.x), float(room.center.y), room.vertices
+                    ):
+                        pos = glm.vec2(room.center)
+                    else:
+                        continue
 
                 enemy: Enemy
                 if random.random() < 0.6:
@@ -314,7 +355,7 @@ class Game:
         self.player.invincible = False
         self.player.is_dashing = False
         self.time_scale = 1.0
-        self.owned_weapons = {WeaponKind.PISTOL, WeaponKind.PORTAL_GUN}
+        self.owned_weapons = {WeaponKind.PISTOL}
         self.current_weapon = WeaponKind.PISTOL
         self.ammo = {k: 0 for k in WeaponKind}
         self.speed_buff_timer = 0
@@ -436,9 +477,11 @@ class Game:
                     self.entities.append(bullet)
                     self.bullets.append(bullet)
 
-                # Consume ammo
+                # Consume ammo and auto-reload when empty
                 if stats.ammo_per_shot:
                     self.ammo[self.current_weapon] -= stats.ammo_per_shot
+                    if self.ammo[self.current_weapon] < stats.ammo_per_shot:
+                        self._start_reload()
 
                 # Muzzle flash
                 self._muzzle_flash_timer = 0.06
@@ -1324,6 +1367,22 @@ class Game:
 
         self.player.aim_target = self.mpos_world
         self.player.draw(self.layer, cam_offset)
+
+        # Reload progress bar near player
+        if self._reloading:
+            rstats = WEAPON_STATS[self.current_weapon]
+            if rstats.reload_time > 0:
+                pp = self.player.pos - cam_offset
+                bar_w, bar_h = 16, 2
+                bx = int(pp.x) - bar_w // 2
+                by = int(pp.y) + 8
+                progress = 1.0 - self._reload_timer / rstats.reload_time
+                fill_w = max(0, int(bar_w * progress))
+                pygame.draw.rect(self.layer, (40, 40, 40), (bx, by, bar_w, bar_h))
+                if fill_w > 0:
+                    pygame.draw.rect(
+                        self.layer, rstats.color, (bx, by, fill_w, bar_h)
+                    )
 
         # Muzzle flash
         if self._muzzle_flash_timer > 0:
