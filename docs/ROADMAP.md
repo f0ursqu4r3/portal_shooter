@@ -10,44 +10,44 @@
 - [x] Procedurally generated maps (BSP rooms + corridors + extra connections)
 - [x] Fog of war / visibility polygon
 - [x] Spatial audio with portal sound propagation
-- [x] HUD (health, ammo, weapon)
+- [x] HUD (health, ammo, weapon, armor bar, dash cooldown, floor counter, key indicator)
 - [x] Inventory (20 slots, stacking up to 16, right-click split, drag-drop, drop-to-world)
-- [x] Pickups: Health, Speed buff, Typed ammo, Weapons
+- [x] Pickups: Health, Speed buff, Typed ammo, Weapons, Armor, Grenades, Keys
 - [x] F-key proximity pickup with world-space tooltip
 - [x] F-key to use hovered inventory item
 - [x] Camera follow with screen shake
-
-## Planned
-
-### Tier 1 — Core gameplay
-
-- [ ] **Enemies**
-  - Melee rusher: pathfinds toward player, deals contact damage
-  - Ranged enemy: stops at distance, fires projectiles
-  - Enemies traverse portals (reuse existing portal logic on Entity)
-  - Spawn per room or wave-based
+- [x] Minimap with player, portal, enemy, and exit door dots
+- [x] **Enemies**
+  - Melee rusher: pathfinds toward player, deals contact damage, retreats after hit
+  - Ranged enemy: maintains distance, fires projectiles, strafes in range
+  - AI state machine: idle, roaming, alert, pursuing, attacking, fleeing, dead
+  - Sight-based awareness: enemies must see the player (LOS + range) to pursue
+  - Sound-based alerting: gunfire/explosions propagate through walls and portals, alerting nearby enemies to investigate
+  - Enemies traverse portals
+  - Spawn per room with difficulty scaling
   - Drop ammo/health on death
-
-- [ ] **Level progression**
-  - Key item spawns in a far room, exit door in another
-  - Completing a floor regenerates the map with harder params
-  - Floor counter on HUD
-
-### Tier 2 — Combat depth
-
-- [ ] **Grenades / throwables**
-  - Arc trajectory, bounces off walls, area damage after fuse
+- [x] **Level progression**
+  - Key item spawns in farthest room, exit door in second-farthest
+  - Completing a floor regenerates the map with harder params (more enemies, higher health/speed)
+  - Floor counter on HUD + key indicator
+- [x] **Grenades / throwables**
+  - Thrown toward cursor (G key), bounces off walls, area damage after 2s fuse
   - Can be thrown through portals
   - Inventory slot item, stackable
-
-- [ ] **Dash / dodge roll**
+  - Explosion particle effect (two-layer burst)
+- [x] **Dash / dodge roll**
   - Shift to dash in movement direction
   - Short i-frames during dash
-  - Cooldown timer (0.5-1s)
+  - Cooldown timer (0.6s), cooldown bar on HUD
+- [x] **Armor / shield pickup**
+  - Absorbs damage before health (centralized damage model)
+  - Blue bar on HUD when armor > 0
+- [x] **Pathfinding**
+  - Room-graph BFS for inter-room navigation
+  - Line-of-sight raycasting via wall grid
+  - Feeler-ray wall avoidance steering
 
-- [ ] **Armor / shield pickup**
-  - Absorbs damage before health
-  - Shown on HUD alongside health
+## Planned
 
 ### Tier 3 — Environment
 
@@ -59,17 +59,12 @@
   - Locked doors requiring key items
   - Pressure plates / switches that open passages
 
-- [ ] **Minimap**
-  - Corner overlay showing explored rooms
-  - Player position + pickup markers
-  - Built from existing room/corridor data
-
 ### Tier 4 — Polish
 
-- [ ] **Muzzle flash** — sprite on fire, 1-2 frame duration
-- [ ] **Wall impact particles** — sparks where bullets hit (ricochet hook exists)
+- [x] **Muzzle flash** — bright glow at gun tip, 1-2 frame duration, color matches weapon
+- [x] **Wall impact particles** — spark burst where bullets hit walls
+- [x] **Damage numbers** — float upward from hit location, fade out
+- [x] **Death screen** — slow-mo + "GAME OVER" overlay, R to restart, shows floor reached
+- [x] **Pause menu** — ESC toggles pause, Q to quit while paused
+- [x] **Sound variety** — play_random selects from available variants (e.g. Ricochet1/Ricochet2)
 - [ ] **Blood decals** — player emitter particles stick to floor surface
-- [ ] **Damage numbers** — float upward from hit location
-- [ ] **Death screen** — slow-mo already works, add restart prompt
-- [ ] **Pause menu** — ESC toggles pause instead of quit
-- [ ] **Sound variety** — multiple footstep/shot/ricochet samples, random selection

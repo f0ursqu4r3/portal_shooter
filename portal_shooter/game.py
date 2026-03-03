@@ -46,6 +46,25 @@ _WEAPON_KIND_MAP: dict[str, WeaponKind] = {
 }
 
 
+class _DamageNumber:
+    """Floating damage number that drifts upward and fades out."""
+    __slots__ = ["pos", "text", "age", "color"]
+
+    def __init__(self, pos: glm.vec2, amount: int, color: tuple[int, int, int] = (255, 220, 80)) -> None:
+        self.pos: glm.vec2 = glm.vec2(pos)
+        self.text: str = str(amount)
+        self.age: float = 0.0
+        self.color: tuple[int, int, int] = color
+
+    @property
+    def alive(self) -> bool:
+        return self.age < 0.8
+
+    def update(self, dt: float) -> None:
+        self.age += dt
+        self.pos.y -= 15 * dt  # float upward
+
+
 class Game:
     def __init__(self) -> None:
         self.window_size: glm.vec2 = glm.vec2(1280, 720)
@@ -122,6 +141,27 @@ class Game:
 
         # Grenades
         self.grenades: list[Grenade] = []
+
+        # Muzzle flash
+        self._muzzle_flash_timer: float = 0.0
+        self._muzzle_flash_pos: glm.vec2 = glm.vec2()
+        self._muzzle_flash_color: tuple[int, int, int] = (255, 255, 200)
+
+        # Wall impact sparks
+        self._impact_emitters: list[ParticleEmitter] = []
+
+        # Damage numbers
+        self._damage_numbers: list[_DamageNumber] = []
+
+        # Death / pause state
+        self._dead: bool = False
+        self._paused: bool = False
+        self._death_font: pygame.font.Font = pygame.font.Font(
+            "assets/fonts/homespun.ttf", 32
+        )
+        self._ui_font: pygame.font.Font = pygame.font.Font(
+            "assets/fonts/homespun.ttf", 14
+        )
 
         # Level progression
         self.level: LevelState = LevelState()
@@ -212,6 +252,27 @@ class Game:
                 ]
                 self.enemies.append(enemy)
 
+    def _restart_game(self) -> None:
+        """Reset entire game state for a new run."""
+        self._dead = False
+        self._paused = False
+        self.player.health = self.player.max_health
+        self.player.armor = 0
+        self.player.invincible = False
+        self.player.is_dashing = False
+        self.time_scale = 1.0
+        self.owned_weapons = {WeaponKind.PISTOL}
+        self.current_weapon = WeaponKind.PISTOL
+        self.ammo = {k: 0 for k in WeaponKind}
+        self.speed_buff_timer = 0
+        self.shot_timer = 0
+        self.inventory = Inventory()
+        self._impact_emitters.clear()
+        self._damage_numbers.clear()
+        self.level = LevelState()
+        self.setup_floor()
+        pygame.mouse.set_visible(False)
+
     def _apply_damage(self, amount: int) -> None:
         """Apply damage to player: armor absorbs first, then health."""
         if self.player.invincible:
@@ -240,6 +301,9 @@ class Game:
         self.mpos_world = self.mpos + cam_offset
 
         self.process_pygame_events()
+
+        if self._dead or self._paused:
+            return
 
         if not self.player.is_dashing:
             self.player.vel = glm.vec2()
@@ -301,6 +365,13 @@ class Game:
                 if stats.ammo_per_shot:
                     self.ammo[self.current_weapon] -= stats.ammo_per_shot
 
+                # Muzzle flash
+                self._muzzle_flash_timer = 0.06
+                self._muzzle_flash_pos = glm.vec2(
+                    self.player.pos + fire_vec * 12
+                )
+                self._muzzle_flash_color = stats.color
+
                 eject_vec = glm.vec2(-fire_vec.y, fire_vec.x)
                 self.entities.append(
                     Shell(
@@ -329,10 +400,33 @@ class Game:
 
     def process_pygame_events(self) -> None:
         for event in pygame.event.get():
-            if event.type == pygame.QUIT or (
-                event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
-            ):
+            if event.type == pygame.QUIT:
                 self.running = False
+                continue
+
+            if event.type == pygame.KEYDOWN:
+                # Death screen: R to restart
+                if self._dead and event.key == pygame.K_r:
+                    self._restart_game()
+                    continue
+
+                # Pause toggle
+                if event.key == pygame.K_ESCAPE:
+                    if self._dead:
+                        continue
+                    if self._paused:
+                        self._paused = False
+                        pygame.mouse.set_visible(self.inventory_ui.is_open)
+                    else:
+                        self._paused = True
+                    continue
+
+                # Q to quit while paused
+                if self._paused and event.key == pygame.K_q:
+                    self.running = False
+                    continue
+
+            if self._dead or self._paused:
                 continue
 
             if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
@@ -420,6 +514,12 @@ class Game:
     def update(self) -> None:
         tdt = min(self.clock.tick() * 0.001, 0.05)
 
+        if self._paused:
+            return
+
+        if self.player.health <= 0 and not self._dead:
+            self._dead = True
+
         if self.player.health > 0:
             self.time_scale = min(1, self.time_scale + tdt * 2)
 
@@ -446,8 +546,19 @@ class Game:
                 continue
 
             if self.game_map.collide_entity(entity, old_pos):
-                self.play_spatial("Ricochet1", float(entity.pos.x), float(entity.pos.y))
+                self.play_spatial("Ricochet", float(entity.pos.x), float(entity.pos.y), random_variant=True)
                 self._alert_enemies_at(float(entity.pos.x), float(entity.pos.y), loudness=0.5)
+                # Wall impact sparks
+                spark = ParticleEmitter(
+                    pos=glm.vec2(entity.pos),
+                    vel=None,
+                    spawn_rate=0,
+                    shape=ParticleEmitter.Circle(3),
+                    particle_class=FadeOutParticle,
+                    particle_kwargs={"color": (255, 220, 120)},
+                )
+                spark.burst(random.randint(3, 6))
+                self._impact_emitters.append(spark)
 
             self.do_portal(entity)
 
@@ -495,6 +606,17 @@ class Game:
 
         if self.speed_buff_timer > 0:
             self.speed_buff_timer = max(0, self.speed_buff_timer - dt)
+
+        if self._muzzle_flash_timer > 0:
+            self._muzzle_flash_timer -= dt
+
+        # Update impact emitters + damage numbers
+        for emitter in self._impact_emitters:
+            emitter.update(dt)
+        self._impact_emitters = [e for e in self._impact_emitters if e.particles]
+        for dmg in self._damage_numbers:
+            dmg.update(dt)
+        self._damage_numbers = [d for d in self._damage_numbers if d.alive]
 
         # Exit door
         if self.exit_door is not None:
@@ -585,6 +707,11 @@ class Game:
                 )
                 collision.life = 0
                 self.play_spatial("Hurt1", float(enemy.pos.x), float(enemy.pos.y), 0.5)
+                # Damage number
+                offset = glm.vec2(random.uniform(-4, 4), random.uniform(-6, -2))
+                self._damage_numbers.append(
+                    _DamageNumber(enemy.pos + offset, collision.damage)
+                )
 
             # Melee contact damage
             if (
@@ -613,8 +740,9 @@ class Game:
             self._spawn_enemy_drops(enemy)
             self.enemies.remove(enemy)
 
-        # Clean up dead bullets
+        # Clean up dead bullets (both player and enemy)
         self.bullets = [b for b in self.bullets if b.life > 0]
+        self.enemy_bullets = [b for b in self.enemy_bullets if b.life > 0]
 
     def _spawn_enemy_drops(self, enemy: Enemy) -> None:
         """Spawn pickup drops from enemy's drop table."""
@@ -665,6 +793,11 @@ class Game:
                 if dist > 1:
                     knockback = glm.normalize(enemy.pos - grenade.pos) * 50
                 enemy.take_damage(damage, knockback, source_pos=self.player.pos)
+                if damage > 0:
+                    offset = glm.vec2(random.uniform(-4, 4), random.uniform(-6, -2))
+                    self._damage_numbers.append(
+                        _DamageNumber(enemy.pos + offset, damage, color=(255, 180, 40))
+                    )
 
         # Self-damage to player (50% reduced)
         player_dist = glm.distance(grenade.pos, self.player.pos)
@@ -727,7 +860,8 @@ class Game:
         )
 
     def play_spatial(
-        self, sound_name: str, source_x: float, source_y: float, base_volume: float = 1.0
+        self, sound_name: str, source_x: float, source_y: float,
+        base_volume: float = 1.0, random_variant: bool = False,
     ) -> None:
         aim = self.mpos_world - self.player.pos
         mag = float((aim.x**2 + aim.y**2) ** 0.5)
@@ -748,7 +882,10 @@ class Game:
         )
         final_vol = volume * base_volume
         if final_vol > 0.01:
-            self.sound_player.play(sound_name, volume=final_vol, pan=pan)
+            if random_variant:
+                self.sound_player.play_random(sound_name, volume=final_vol, pan=pan)
+            else:
+                self.sound_player.play(sound_name, volume=final_vol, pan=pan)
 
     def _alert_enemies_at(
         self, source_x: float, source_y: float, loudness: float = 1.0
@@ -833,6 +970,10 @@ class Game:
         for pickup in self.pickups:
             pickup.draw(self.layer, cam_offset)
 
+        # Draw impact sparks
+        for emitter in self._impact_emitters:
+            emitter.draw(self.layer, cam_offset)
+
         # Draw enemies
         for enemy in self.enemies:
             enemy.draw(self.layer, cam_offset)
@@ -841,12 +982,33 @@ class Game:
         for grenade in self.grenades:
             grenade.draw(self.layer, cam_offset)
 
+        # Draw damage numbers
+        for dmg in self._damage_numbers:
+            alpha = max(0, int(255 * (1.0 - dmg.age / 0.8)))
+            r, g, b = dmg.color
+            txt = self._pickup_font.render(dmg.text, False, (r, g, b))
+            txt.set_alpha(alpha)
+            dp = dmg.pos - cam_offset
+            self.layer.blit(txt, (int(dp.x) - txt.get_width() // 2, int(dp.y)))
+
         # Draw exit door
         if self.exit_door is not None:
             self.exit_door.draw(self.layer, cam_offset)
 
         self.player.aim_target = self.mpos_world
         self.player.draw(self.layer, cam_offset)
+
+        # Muzzle flash
+        if self._muzzle_flash_timer > 0:
+            fp = self._muzzle_flash_pos - cam_offset
+            r, g, b = self._muzzle_flash_color
+            # Bright core
+            cr = min(255, r + 100)
+            cg = min(255, g + 100)
+            cb = min(255, b + 100)
+            pygame.draw.circle(self.layer, (cr, cg, cb, 220), (int(fp.x), int(fp.y)), 2)
+            # Outer glow
+            pygame.draw.circle(self.layer, (255, 255, 200, 100), (int(fp.x), int(fp.y)), 4)
 
         for portal in self.portals:
             if portal:
@@ -866,7 +1028,45 @@ class Game:
         pygame.transform.scale(self.screen, self.window_size, self.window)
         self.hud.draw(self.window, self)
         self.inventory_ui.draw(self.window, self)
+
+        if self._dead:
+            self._draw_death_screen()
+        elif self._paused:
+            self._draw_pause_screen()
+
         pygame.display.flip()
+
+    def _draw_death_screen(self) -> None:
+        overlay = pygame.Surface(self.window_size, pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 120))
+        self.window.blit(overlay, (0, 0))
+
+        cx, cy = int(self.window_size.x) // 2, int(self.window_size.y) // 2
+        title = self._death_font.render("GAME OVER", False, (200, 40, 40))
+        self.window.blit(title, (cx - title.get_width() // 2, cy - 40))
+
+        floor_text = self._ui_font.render(
+            f"Floor {self.level.floor}", False, (180, 180, 180)
+        )
+        self.window.blit(floor_text, (cx - floor_text.get_width() // 2, cy + 10))
+
+        restart = self._ui_font.render("R to Restart", False, (160, 160, 160))
+        self.window.blit(restart, (cx - restart.get_width() // 2, cy + 40))
+
+    def _draw_pause_screen(self) -> None:
+        overlay = pygame.Surface(self.window_size, pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 140))
+        self.window.blit(overlay, (0, 0))
+
+        cx, cy = int(self.window_size.x) // 2, int(self.window_size.y) // 2
+        title = self._death_font.render("PAUSED", False, (180, 180, 180))
+        self.window.blit(title, (cx - title.get_width() // 2, cy - 30))
+
+        resume = self._ui_font.render("ESC to Resume", False, (140, 140, 140))
+        self.window.blit(resume, (cx - resume.get_width() // 2, cy + 20))
+
+        quit_text = self._ui_font.render("Q to Quit", False, (140, 140, 140))
+        self.window.blit(quit_text, (cx - quit_text.get_width() // 2, cy + 46))
 
     def _draw_pickup_tooltip(
         self, surface: pygame.Surface, pickup: Pickup, cam_offset: glm.vec2

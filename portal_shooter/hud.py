@@ -223,7 +223,7 @@ class HUD:
         if game.speed_buff_timer <= 0:
             return
 
-        x, y = 8, 28
+        x, y = 8, 40
         window.blit(self._label_spd, (x, y))
 
         bar_x = x + 36
