@@ -24,8 +24,8 @@ class EnemyState(enum.Enum):
 _ALERT_TIMEOUT = 3.0
 # How long a melee enemy retreats after landing an attack
 _RETREAT_DURATION = 0.4
-# Distance at which a melee enemy will retreat after attacking
-_RETREAT_DIST = 25.0
+# LOS range — enemies can only "see" this far
+_SIGHT_RANGE = 120.0
 
 
 class Enemy(Entity):
@@ -45,6 +45,7 @@ class Enemy(Entity):
         "_alert_timer",
         "_roam_target",
         "_roam_timer",
+        "_last_known_pos",
         "drop_table",
     ]
 
@@ -70,6 +71,7 @@ class Enemy(Entity):
         self._alert_timer: float = 0.0
         self._roam_target: glm.vec2 | None = None
         self._roam_timer: float = 0.0
+        self._last_known_pos: glm.vec2 | None = None
         self.drop_table: list[tuple[str, str | None, float]] = [
             ("health", None, 0.3),
             ("ammo", None, 0.2),
@@ -85,6 +87,11 @@ class Enemy(Entity):
         )
 
     @property
+    def aware(self) -> bool:
+        """True if enemy knows where the player is (or was recently)."""
+        return self._last_known_pos is not None
+
+    @property
     def rect(self) -> pygame.Rect:
         return pygame.Rect(self.pos.x - 3, self.pos.y - 3, 6, 6)
 
@@ -92,12 +99,30 @@ class Enemy(Entity):
     def alive(self) -> bool:
         return self.state != EnemyState.DEAD
 
-    def take_damage(self, amount: int, knockback: glm.vec2 | None = None) -> None:
+    def hear_sound(self, source_pos: glm.vec2) -> None:
+        """React to a loud sound — become alert and investigate."""
+        if self.state in (EnemyState.DEAD, EnemyState.PURSUING, EnemyState.ATTACKING):
+            return
+        self._last_known_pos = glm.vec2(source_pos)
+        self._alert_timer = _ALERT_TIMEOUT
+        if self.state in (EnemyState.IDLE, EnemyState.ROAMING):
+            self.state = EnemyState.ALERT
+
+    def take_damage(
+        self,
+        amount: int,
+        knockback: glm.vec2 | None = None,
+        source_pos: glm.vec2 | None = None,
+    ) -> None:
         self.health -= amount
         self._stun_timer = 0.15
         if knockback is not None:
             self.vel = knockback
-        # Getting hit always alerts the enemy
+        # Getting hit alerts and gives a rough idea of the source direction.
+        # We set last_known_pos so the enemy investigates the attacker's
+        # position even if they can't see them yet.
+        if source_pos is not None:
+            self._last_known_pos = glm.vec2(source_pos)
         if self.state in (EnemyState.IDLE, EnemyState.ROAMING):
             self.state = EnemyState.ALERT
             self._alert_timer = _ALERT_TIMEOUT
@@ -122,6 +147,9 @@ class Enemy(Entity):
 
         if self._alert_timer > 0:
             self._alert_timer -= dt
+            if self._alert_timer <= 0:
+                # Alert expired — forget player position
+                self._last_known_pos = None
 
         if self._stun_timer > 0:
             self._stun_timer -= dt
@@ -133,7 +161,7 @@ class Enemy(Entity):
         self.emitter.pos = self.pos
         self.emitter.update(dt)
 
-    def _pick_roam_target(self, rooms: list[object] | None = None) -> None:
+    def _pick_roam_target(self) -> None:
         """Pick a random nearby point to roam toward."""
         angle = random.uniform(0, 6.283)
         dist = random.uniform(15, 40)
@@ -148,29 +176,37 @@ class Enemy(Entity):
         has_los: bool,
         waypoint: glm.vec2 | None,
     ) -> bool:
-        """Update AI state. Returns True if enemy wants to fire (ranged only)."""
+        """Update AI state. Returns True if enemy wants to fire (ranged only).
+
+        has_los: True only if the enemy actually has clear line-of-sight AND
+                 the player is within sight range.
+        waypoint: pathfinding waypoint toward _last_known_pos (NOT the live
+                  player position). None if unaware.
+        """
         if self.state == EnemyState.DEAD or self._stun_timer > 0:
             return False
 
-        dist_to_player = glm.distance(self.pos, player_pos)
-
-        # State transitions
-        if has_los or dist_to_player < 60:
+        # --- Acquire / refresh awareness ---
+        if has_los:
+            self._last_known_pos = glm.vec2(player_pos)
             self._alert_timer = _ALERT_TIMEOUT
             if self.state not in (EnemyState.ATTACKING, EnemyState.FLEEING):
                 self.state = EnemyState.PURSUING
-        elif self.state == EnemyState.PURSUING and not has_los:
+        elif self.state in (EnemyState.PURSUING, EnemyState.ATTACKING):
+            # Lost LOS while actively engaged — go alert
             self.state = EnemyState.ALERT
             self._alert_timer = _ALERT_TIMEOUT
         elif self.state == EnemyState.ALERT and self._alert_timer <= 0:
             self.state = EnemyState.IDLE
+            self._last_known_pos = None
+            self.target_waypoint = None
 
         # Idle → roaming
         if self.state == EnemyState.IDLE and self._roam_timer <= 0:
             self.state = EnemyState.ROAMING
             self._pick_roam_target()
 
-        # Execute state behavior
+        # --- Execute behavior ---
         if self.state == EnemyState.IDLE:
             self.vel = glm.vec2()
         elif self.state == EnemyState.ROAMING:
@@ -185,8 +221,25 @@ class Enemy(Entity):
             else:
                 self.state = EnemyState.IDLE
                 self.vel = glm.vec2()
-        elif self.state in (EnemyState.ALERT, EnemyState.PURSUING):
+        elif self.state == EnemyState.ALERT:
+            # Move toward last-known position via waypoint
             if waypoint is not None:
+                diff = waypoint - self.pos
+                if glm.length(diff) > 2:
+                    self.vel = glm.normalize(diff) * self.speed * 0.7
+                else:
+                    self.vel = glm.vec2()
+            else:
+                self.vel = glm.vec2()
+        elif self.state == EnemyState.PURSUING:
+            # Has LOS — move directly toward player
+            if has_los:
+                diff = player_pos - self.pos
+                if glm.length(diff) > 2:
+                    self.vel = glm.normalize(diff) * self.speed
+                else:
+                    self.vel = glm.vec2()
+            elif waypoint is not None:
                 diff = waypoint - self.pos
                 if glm.length(diff) > 2:
                     self.vel = glm.normalize(diff) * self.speed
@@ -234,7 +287,6 @@ class MeleeEnemy(Enemy):
         if glm.length(diff) > 0.5:
             self.vel = glm.normalize(diff) * self.speed * 1.5
         else:
-            # Fallback: pick a random direction
             self.vel = glm.vec2(random.uniform(-1, 1), random.uniform(-1, 1)) * self.speed
 
     def update_ai(
@@ -252,25 +304,28 @@ class MeleeEnemy(Enemy):
         if self.state == EnemyState.FLEEING:
             return False
 
-        # State transitions
-        if has_los or dist_to_player < 60:
+        # --- Acquire / refresh awareness ---
+        if has_los:
+            self._last_known_pos = glm.vec2(player_pos)
             self._alert_timer = _ALERT_TIMEOUT
             if dist_to_player < 10:
                 self.state = EnemyState.ATTACKING
             else:
                 self.state = EnemyState.PURSUING
-        elif self.state == EnemyState.PURSUING and not has_los:
+        elif self.state in (EnemyState.PURSUING, EnemyState.ATTACKING):
             self.state = EnemyState.ALERT
             self._alert_timer = _ALERT_TIMEOUT
         elif self.state == EnemyState.ALERT and self._alert_timer <= 0:
             self.state = EnemyState.IDLE
+            self._last_known_pos = None
+            self.target_waypoint = None
 
         # Idle → roaming
         if self.state == EnemyState.IDLE and self._roam_timer <= 0:
             self.state = EnemyState.ROAMING
             self._pick_roam_target()
 
-        # Execute behavior per state
+        # --- Execute behavior ---
         if self.state == EnemyState.IDLE:
             self.vel = glm.vec2()
         elif self.state == EnemyState.ROAMING:
@@ -286,10 +341,14 @@ class MeleeEnemy(Enemy):
                 self.state = EnemyState.IDLE
                 self.vel = glm.vec2()
         elif self.state in (EnemyState.PURSUING, EnemyState.ATTACKING):
-            direction = player_pos - self.pos
+            if has_los:
+                direction = player_pos - self.pos
+            elif waypoint is not None:
+                direction = waypoint - self.pos
+            else:
+                direction = glm.vec2()
             if glm.length(direction) > 1:
-                # Burst speed when close for lunging
-                speed = 70.0 if dist_to_player < 40 else self.speed
+                speed = 70.0 if dist_to_player < 40 and has_los else self.speed
                 self.vel = glm.normalize(direction) * speed
             else:
                 self.vel = glm.vec2()
@@ -297,7 +356,7 @@ class MeleeEnemy(Enemy):
             if waypoint is not None:
                 diff = waypoint - self.pos
                 if glm.length(diff) > 2:
-                    self.vel = glm.normalize(diff) * self.speed
+                    self.vel = glm.normalize(diff) * self.speed * 0.7
                 else:
                     self.vel = glm.vec2()
             else:
@@ -349,6 +408,7 @@ class RangedEnemy(Enemy):
         wants_fire = False
 
         if has_los:
+            self._last_known_pos = glm.vec2(player_pos)
             self._alert_timer = _ALERT_TIMEOUT
 
             direction = player_pos - self.pos
@@ -388,6 +448,8 @@ class RangedEnemy(Enemy):
         elif self.state == EnemyState.ALERT:
             if self._alert_timer <= 0:
                 self.state = EnemyState.IDLE
+                self._last_known_pos = None
+                self.target_waypoint = None
                 self.vel = glm.vec2()
             elif waypoint is not None:
                 diff = waypoint - self.pos

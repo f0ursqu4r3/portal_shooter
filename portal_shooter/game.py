@@ -12,6 +12,7 @@ from portal_shooter.entities import (
     Bullet,
     Camera,
     Enemy,
+    EnemyState,
     ExitDoor,
     MeleeEnemy,
     Pickup,
@@ -312,6 +313,9 @@ class Game:
                 shake = fire_vec * -(random.random() * 1.5 + 1.5) * stats.recoil
                 self.player.vel = shake * 10
                 self.sound_player.play("Shoot1")
+                self._alert_enemies_at(
+                    float(self.player.pos.x), float(self.player.pos.y), loudness=1.0
+                )
 
                 self.camera.shake = glm.vec2(shake)
 
@@ -443,6 +447,7 @@ class Game:
 
             if self.game_map.collide_entity(entity, old_pos):
                 self.play_spatial("Ricochet1", float(entity.pos.x), float(entity.pos.y))
+                self._alert_enemies_at(float(entity.pos.x), float(entity.pos.y), loudness=0.5)
 
             self.do_portal(entity)
 
@@ -513,25 +518,40 @@ class Game:
                     dead_enemies.append(enemy)
                 continue
 
-            # Re-path every 0.5s
+            # LOS check — only within sight range
+            from portal_shooter.entities.enemy import _SIGHT_RANGE
+            dist_to_player = glm.distance(enemy.pos, self.player.pos)
+            los = (
+                dist_to_player <= _SIGHT_RANGE
+                and has_line_of_sight(
+                    enemy.pos, self.player.pos, self.game_map._wall_grid
+                )
+            )
+
+            # Re-path every 0.5s — only if enemy is aware (has a last-known pos)
             if enemy._path_timer <= 0 and room_graph is not None:
                 enemy._path_timer = 0.5
-                enemy.current_room = room_graph.find_room(enemy.pos)
-                player_room = room_graph.find_room(self.player.pos)
-                if enemy.current_room is not None and player_room is not None:
-                    path = room_graph.find_path(enemy.current_room, player_room)
-                    if len(path) > 1:
-                        next_room = path[1]
-                        enemy.target_waypoint = glm.vec2(
-                            self.game_map.rooms[next_room].center
-                        )
+                if los:
+                    # Live tracking — path toward actual player position
+                    enemy.target_waypoint = glm.vec2(self.player.pos)
+                elif enemy._last_known_pos is not None:
+                    # Path toward remembered position
+                    enemy.current_room = room_graph.find_room(enemy.pos)
+                    target_room = room_graph.find_room(enemy._last_known_pos)
+                    if enemy.current_room is not None and target_room is not None:
+                        path = room_graph.find_path(enemy.current_room, target_room)
+                        if len(path) > 1:
+                            next_room = path[1]
+                            enemy.target_waypoint = glm.vec2(
+                                self.game_map.rooms[next_room].center
+                            )
+                        else:
+                            enemy.target_waypoint = glm.vec2(enemy._last_known_pos)
                     else:
-                        enemy.target_waypoint = glm.vec2(self.player.pos)
-
-            # LOS check
-            los = has_line_of_sight(
-                enemy.pos, self.player.pos, self.game_map._wall_grid
-            )
+                        enemy.target_waypoint = glm.vec2(enemy._last_known_pos)
+                else:
+                    # Unaware — no waypoint
+                    enemy.target_waypoint = None
 
             # AI update
             wants_fire = enemy.update_ai(
@@ -560,7 +580,9 @@ class Game:
             # Player bullets hit enemies
             for collision in get_collisions(enemy, self.bullets):
                 knockback = glm.normalize(collision.vel) * 30 if collision.vel else None
-                enemy.take_damage(collision.damage, knockback)
+                enemy.take_damage(
+                    collision.damage, knockback, source_pos=self.player.pos
+                )
                 collision.life = 0
                 self.play_spatial("Hurt1", float(enemy.pos.x), float(enemy.pos.y), 0.5)
 
@@ -642,7 +664,7 @@ class Game:
                 knockback = None
                 if dist > 1:
                     knockback = glm.normalize(enemy.pos - grenade.pos) * 50
-                enemy.take_damage(damage, knockback)
+                enemy.take_damage(damage, knockback, source_pos=self.player.pos)
 
         # Self-damage to player (50% reduced)
         player_dist = glm.distance(grenade.pos, self.player.pos)
@@ -679,6 +701,30 @@ class Game:
         # Merge inner particles into main emitter so they draw together
         grenade.emitter.particles.extend(inner.particles)
         self.play_spatial("Shoot1", float(grenade.pos.x), float(grenade.pos.y), 0.8)
+        self._alert_enemies_at(float(grenade.pos.x), float(grenade.pos.y), loudness=1.5)
+
+    def _get_portal_data(self) -> tuple[PortalData, PortalData] | None:
+        p0, p1 = self.portals[0], self.portals[1]
+        if p0 is None or p1 is None:
+            return None
+        n0x, n0y = float(p0.normal.x), float(p0.normal.y)
+        n1x, n1y = float(p1.normal.x), float(p1.normal.y)
+        return (
+            PortalData(
+                float(p0.pos.x) - n0x * 2, float(p0.pos.y) - n0y * 2,
+                n0x, n0y,
+                float(p0.pos.x), float(p0.pos.y),
+                float(p0.line[0].x), float(p0.line[0].y),
+                float(p0.line[1].x), float(p0.line[1].y),
+            ),
+            PortalData(
+                float(p1.pos.x) - n1x * 2, float(p1.pos.y) - n1y * 2,
+                n1x, n1y,
+                float(p1.pos.x), float(p1.pos.y),
+                float(p1.line[0].x), float(p1.line[0].y),
+                float(p1.line[1].x), float(p1.line[1].y),
+            ),
+        )
 
     def play_spatial(
         self, sound_name: str, source_x: float, source_y: float, base_volume: float = 1.0
@@ -690,29 +736,7 @@ class Game:
         else:
             fx, fy = float(aim.x) / mag, float(aim.y) / mag
 
-        portal_data: tuple[PortalData, PortalData] | None = None
-        p0, p1 = self.portals[0], self.portals[1]
-        if p0 is not None and p1 is not None:
-            # Portal.pos is already offset normal*2 from the wall surface.
-            # PortalData.pos = wall surface, exit = portal.pos (just off wall).
-            n0x, n0y = float(p0.normal.x), float(p0.normal.y)
-            n1x, n1y = float(p1.normal.x), float(p1.normal.y)
-            portal_data = (
-                PortalData(
-                    float(p0.pos.x) - n0x * 2, float(p0.pos.y) - n0y * 2,
-                    n0x, n0y,
-                    float(p0.pos.x), float(p0.pos.y),
-                    float(p0.line[0].x), float(p0.line[0].y),
-                    float(p0.line[1].x), float(p0.line[1].y),
-                ),
-                PortalData(
-                    float(p1.pos.x) - n1x * 2, float(p1.pos.y) - n1y * 2,
-                    n1x, n1y,
-                    float(p1.pos.x), float(p1.pos.y),
-                    float(p1.line[0].x), float(p1.line[0].y),
-                    float(p1.line[1].x), float(p1.line[1].y),
-                ),
-            )
+        portal_data = self._get_portal_data()
 
         assert self.game_map._wall_grid is not None
         volume, pan = compute_sound(
@@ -725,6 +749,37 @@ class Game:
         final_vol = volume * base_volume
         if final_vol > 0.01:
             self.sound_player.play(sound_name, volume=final_vol, pan=pan)
+
+    def _alert_enemies_at(
+        self, source_x: float, source_y: float, loudness: float = 1.0
+    ) -> None:
+        """Alert enemies that can 'hear' a sound at the given position.
+
+        Uses the same raytraced sound propagation as the player audio —
+        volume is computed at each enemy's position accounting for walls and
+        portals.  If the perceived volume * loudness exceeds a threshold the
+        enemy becomes ALERT and remembers the sound source location.
+        """
+        assert self.game_map._wall_grid is not None
+        portal_data = self._get_portal_data()
+        hearing_threshold = 0.05
+
+        for enemy in self.enemies:
+            if not enemy.alive:
+                continue
+            # Skip enemies that are already actively engaged
+            if enemy.state in (EnemyState.PURSUING, EnemyState.ATTACKING):
+                continue
+
+            vol, _ = compute_sound(
+                float(enemy.pos.x), float(enemy.pos.y),
+                1.0, 0.0,  # facing doesn't affect volume
+                source_x, source_y,
+                self.game_map._wall_grid,
+                portal_data,
+            )
+            if vol * loudness >= hearing_threshold:
+                enemy.hear_sound(glm.vec2(source_x, source_y))
 
     def do_portal(self, entity: Entity) -> None:
         if not (all(self.portals) and entity.vel):
