@@ -14,6 +14,12 @@ class AmmoType(enum.Enum):
     ROCKET = "rocket"
 
 
+class MeleeStyle(enum.Enum):
+    NONE = "none"
+    STAB = "stab"   # narrow thrust (knife)
+    ARC = "arc"     # sweeping arc (sword, axe)
+
+
 class WeaponKind(enum.IntEnum):
     PISTOL = 0
     SHOTGUN = 1
@@ -23,6 +29,9 @@ class WeaponKind(enum.IntEnum):
     SNIPER_RIFLE = 5
     GRENADE_LAUNCHER = 6
     ROCKET_LAUNCHER = 7
+    KNIFE = 8
+    SWORD = 9
+    AXE = 10
 
 
 @dataclass(frozen=True)
@@ -40,6 +49,10 @@ class WeaponStats:
     color: tuple[int, int, int]
     ammo_type: AmmoType | None = None
     pickup_ammo: int = 0
+    melee_style: MeleeStyle = MeleeStyle.NONE
+    melee_range: float = 0.0
+    melee_arc_half: float = 0.0
+    melee_knockback: float = 0.0
 
 
 AMMO_COLORS: dict[AmmoType, tuple[int, int, int]] = {
@@ -186,4 +199,59 @@ WEAPON_STATS: dict[WeaponKind, WeaponStats] = {
         color=(200, 80, 60),
         ammo_type=AmmoType.ROCKET,
     ),
+    WeaponKind.KNIFE: WeaponStats(
+        fire_rate=0.2,
+        bullet_speed=0,
+        damage=15,
+        ammo_per_shot=0,
+        magazine_size=0,
+        reload_time=0,
+        recoil=0,
+        spread=0.0,
+        pellets=1,
+        piercing=False,
+        color=(200, 200, 200),
+        melee_style=MeleeStyle.STAB,
+        melee_range=20.0,
+        melee_arc_half=math.radians(10),
+        melee_knockback=15.0,
+    ),
+    WeaponKind.SWORD: WeaponStats(
+        fire_rate=0.4,
+        bullet_speed=0,
+        damage=25,
+        ammo_per_shot=0,
+        magazine_size=0,
+        reload_time=0,
+        recoil=0,
+        spread=0.0,
+        pellets=1,
+        piercing=True,
+        color=(100, 180, 255),
+        melee_style=MeleeStyle.ARC,
+        melee_range=25.0,
+        melee_arc_half=math.radians(45),
+        melee_knockback=25.0,
+    ),
+    WeaponKind.AXE: WeaponStats(
+        fire_rate=0.7,
+        bullet_speed=0,
+        damage=45,
+        ammo_per_shot=0,
+        magazine_size=0,
+        reload_time=0,
+        recoil=0,
+        spread=0.0,
+        pellets=1,
+        piercing=True,
+        color=(200, 120, 60),
+        melee_style=MeleeStyle.ARC,
+        melee_range=30.0,
+        melee_arc_half=math.radians(60),
+        melee_knockback=40.0,
+    ),
 }
+
+MELEE_WEAPONS: frozenset[WeaponKind] = frozenset({
+    WeaponKind.KNIFE, WeaponKind.SWORD, WeaponKind.AXE,
+})

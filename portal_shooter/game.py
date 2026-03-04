@@ -37,7 +37,14 @@ from portal_shooter.map.pathfinding import has_line_of_sight
 from portal_shooter.particles import FadeOutParticle, ParticleEmitter
 from portal_shooter.sound import SoundPlayer
 from portal_shooter.sound_propagation import compute_sound
-from portal_shooter.weapons import AMMO_COLORS, AMMO_PICKUP_QTY, WEAPON_STATS, AmmoType, WeaponKind
+from portal_shooter.weapons import (
+    AMMO_COLORS,
+    AMMO_PICKUP_QTY,
+    WEAPON_STATS,
+    AmmoType,
+    MeleeStyle,
+    WeaponKind,
+)
 
 pygame.init()
 
@@ -63,6 +70,8 @@ _WEAPON_KIND_MAP: dict[str, WeaponKind] = {
     "sniper_rifle": WeaponKind.SNIPER_RIFLE,
     "grenade_launcher": WeaponKind.GRENADE_LAUNCHER,
     "rocket_launcher": WeaponKind.ROCKET_LAUNCHER,
+    "sword": WeaponKind.SWORD,
+    "axe": WeaponKind.AXE,
 }
 
 _AMMO_TYPE_MAP: dict[str, AmmoType] = {
@@ -132,7 +141,7 @@ class Game:
         self.bullets: list[Bullet] = []
         self.enemy_bullets: list[Bullet] = []
 
-        self.owned_weapons: set[WeaponKind] = {WeaponKind.PISTOL}
+        self.owned_weapons: set[WeaponKind] = {WeaponKind.PISTOL, WeaponKind.KNIFE}
 
         self.pickups: list[Pickup] = []
 
@@ -187,6 +196,14 @@ class Game:
         self._muzzle_flash_timer: float = 0.0
         self._muzzle_flash_pos: glm.vec2 = glm.vec2()
         self._muzzle_flash_color: tuple[int, int, int] = (255, 255, 200)
+
+        # Melee flash
+        self._melee_flash_timer: float = 0.0
+        self._melee_flash_angle: float = 0.0
+        self._melee_flash_range: float = 0.0
+        self._melee_flash_arc: float = 0.0
+        self._melee_flash_style: MeleeStyle = MeleeStyle.NONE
+        self._melee_flash_color: tuple[int, int, int] = (200, 200, 200)
 
         # Wall impact sparks
         self._impact_emitters: list[ParticleEmitter] = []
@@ -363,7 +380,7 @@ class Game:
         self.player.invincible = False
         self.player.is_dashing = False
         self.time_scale = 1.0
-        self.owned_weapons = {WeaponKind.PISTOL}
+        self.owned_weapons = {WeaponKind.PISTOL, WeaponKind.KNIFE}
         self.current_weapon = WeaponKind.PISTOL
         self.ammo = {k: 0 for k in WeaponKind}
         self.ammo[WeaponKind.PISTOL] = 12
@@ -456,8 +473,9 @@ class Game:
         ):
             stats = WEAPON_STATS[self.current_weapon]
 
-            # Check ammo
-            if (
+            if stats.melee_style != MeleeStyle.NONE:
+                self._perform_melee_attack()
+            elif (
                 stats.ammo_per_shot
                 and self.ammo[self.current_weapon] < stats.ammo_per_shot
             ):
@@ -786,6 +804,8 @@ class Game:
 
         if self._muzzle_flash_timer > 0:
             self._muzzle_flash_timer -= dt
+        if self._melee_flash_timer > 0:
+            self._melee_flash_timer -= dt
 
         # Update doors and switches
         for door in self.doors:
@@ -1005,6 +1025,66 @@ class Game:
                     )
                 else:
                     self.pickups.append(Pickup(enemy.pos + offset, pk))
+
+    def _perform_melee_attack(self) -> None:
+        """Execute a melee attack with the current weapon."""
+        stats = WEAPON_STATS[self.current_weapon]
+        fire_vec = glm.normalize(self.mpos_world - self.player.pos)
+        attack_angle = math.atan2(fire_vec.y, fire_vec.x)
+
+        # Hit enemies in range/arc
+        for enemy in self.enemies:
+            if not enemy.alive:
+                continue
+            dx = enemy.pos.x - self.player.pos.x
+            dy = enemy.pos.y - self.player.pos.y
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist > stats.melee_range:
+                continue
+            enemy_angle = math.atan2(dy, dx)
+            diff = (enemy_angle - attack_angle + math.pi) % (2 * math.pi) - math.pi
+            if abs(diff) > stats.melee_arc_half:
+                continue
+            kb_dir = glm.normalize(enemy.pos - self.player.pos) if dist > 0.1 else fire_vec
+            enemy.take_damage(
+                stats.damage,
+                knockback=kb_dir * stats.melee_knockback,
+                source_pos=self.player.pos,
+            )
+            self._damage_numbers.append(_DamageNumber(enemy.pos, stats.damage))
+            if not stats.piercing:
+                break
+
+        # Hit crates in range/arc
+        for crate in self.crates:
+            if not crate.alive:
+                continue
+            dx = crate.pos.x - self.player.pos.x
+            dy = crate.pos.y - self.player.pos.y
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist > stats.melee_range:
+                continue
+            crate_angle = math.atan2(dy, dx)
+            diff = (crate_angle - attack_angle + math.pi) % (2 * math.pi) - math.pi
+            if abs(diff) > stats.melee_arc_half:
+                continue
+            crate.take_damage(stats.damage)
+
+        # Set melee flash state
+        self._melee_flash_timer = 0.1
+        self._melee_flash_angle = attack_angle
+        self._melee_flash_range = stats.melee_range
+        self._melee_flash_arc = stats.melee_arc_half
+        self._melee_flash_style = stats.melee_style
+        self._melee_flash_color = stats.color
+
+        self.sound_player.play("Shoot1")
+        self._alert_enemies_at(
+            float(self.player.pos.x), float(self.player.pos.y), loudness=0.3
+        )
+
+        rate = stats.fire_rate / 2 if self.speed_buff_timer > 0 else stats.fire_rate
+        self.shot_timer = rate
 
     def _start_reload(self) -> None:
         """Begin reloading the current weapon if conditions are met."""
@@ -1400,6 +1480,7 @@ class Game:
                 self.exit_door.draw(self.layer, cam_offset)
 
         self.player.aim_target = self.mpos_world
+        self.player.current_weapon_kind = self.current_weapon
         self.player.draw(self.layer, cam_offset)
 
         # Reload progress bar near player
@@ -1431,6 +1512,31 @@ class Game:
             pygame.draw.circle(
                 self.layer, (255, 255, 200, 100), (int(fp.x), int(fp.y)), 4
             )
+
+        # Melee flash
+        if self._melee_flash_timer > 0:
+            pp = self.player.pos - cam_offset
+            ppx, ppy = int(pp.x), int(pp.y)
+            alpha = int(200 * (self._melee_flash_timer / 0.1))
+            r, g, b = self._melee_flash_color
+            if self._melee_flash_style == MeleeStyle.STAB:
+                # Draw line from player toward cursor
+                end_x = ppx + int(math.cos(self._melee_flash_angle) * self._melee_flash_range)
+                end_y = ppy + int(math.sin(self._melee_flash_angle) * self._melee_flash_range)
+                pygame.draw.line(self.layer, (r, g, b, alpha), (ppx, ppy), (end_x, end_y), 2)
+            elif self._melee_flash_style == MeleeStyle.ARC:
+                # Draw filled pie-slice polygon
+                n_segs = 8
+                arc_pts: list[tuple[int, int]] = [(ppx, ppy)]
+                start_a = self._melee_flash_angle - self._melee_flash_arc
+                step = (2 * self._melee_flash_arc) / n_segs
+                for i in range(n_segs + 1):
+                    a = start_a + step * i
+                    ax = ppx + int(math.cos(a) * self._melee_flash_range)
+                    ay = ppy + int(math.sin(a) * self._melee_flash_range)
+                    arc_pts.append((ax, ay))
+                if len(arc_pts) >= 3:
+                    pygame.draw.polygon(self.layer, (r, g, b, alpha), arc_pts)
 
         # Mask entities to visible area only
         if screen_pts:

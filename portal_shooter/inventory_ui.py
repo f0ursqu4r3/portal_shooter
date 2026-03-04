@@ -8,7 +8,7 @@ from pyglm import glm
 
 from portal_shooter.entities.pickup import Pickup, PickupKind
 from portal_shooter.inventory import MAX_STACK, Inventory, InventoryItem
-from portal_shooter.weapons import AMMO_NAMES, WEAPON_STATS, WeaponKind
+from portal_shooter.weapons import AMMO_NAMES, MELEE_WEAPONS, WEAPON_STATS, WeaponKind
 
 if TYPE_CHECKING:
     from portal_shooter.game import Game
@@ -40,6 +40,9 @@ _WEAPON_ABBREVS: dict[WeaponKind, str] = {
     WeaponKind.SNIPER_RIFLE: "SNP",
     WeaponKind.GRENADE_LAUNCHER: "GL",
     WeaponKind.ROCKET_LAUNCHER: "RL",
+    WeaponKind.KNIFE: "KNF",
+    WeaponKind.SWORD: "SWD",
+    WeaponKind.AXE: "AXE",
 }
 
 
@@ -456,9 +459,14 @@ class InventoryUI:
             pygame.draw.line(surface, color, (cx, cy - 4), (cx + 4, cy - 8), 2)
 
         elif item.kind == PickupKind.WEAPON:
-            # Gun silhouette: barrel + grip
-            pygame.draw.line(surface, color, (cx - 12, cy - 2), (cx + 12, cy - 2), 3)
-            pygame.draw.line(surface, color, (cx + 4, cy - 2), (cx + 4, cy + 8), 3)
+            if item.weapon_kind is not None and item.weapon_kind in MELEE_WEAPONS:
+                # Blade icon: diagonal line
+                pygame.draw.line(surface, color, (cx - 8, cy + 8), (cx + 8, cy - 8), 3)
+                pygame.draw.line(surface, color, (cx - 8, cy + 8), (cx - 4, cy + 4), 3)
+            else:
+                # Gun silhouette: barrel + grip
+                pygame.draw.line(surface, color, (cx - 12, cy - 2), (cx + 12, cy - 2), 3)
+                pygame.draw.line(surface, color, (cx + 4, cy - 2), (cx + 4, cy + 8), 3)
             # Weapon abbreviation
             if item.weapon_kind is not None:
                 abbr = _WEAPON_ABBREVS.get(item.weapon_kind, "???")

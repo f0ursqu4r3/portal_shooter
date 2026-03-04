@@ -478,6 +478,7 @@ def generate_pickup_positions(
     weapon_types = [
         "shotgun", "smg", "rifle",
         "machine_gun", "sniper_rifle", "grenade_launcher", "rocket_launcher",
+        "sword", "axe",
     ]
     ammo_types = ["light", "medium", "heavy", "shells", "grenade", "rocket"]
     positions: list[tuple[glm.vec2, str, str | None]] = []

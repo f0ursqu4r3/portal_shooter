@@ -7,7 +7,7 @@ import pygame
 from pyglm import glm
 
 from portal_shooter.entities.entity import Entity
-from portal_shooter.weapons import AMMO_COLORS, AMMO_NAMES, WEAPON_STATS, AmmoType, WeaponKind
+from portal_shooter.weapons import AMMO_COLORS, AMMO_NAMES, MELEE_WEAPONS, WEAPON_STATS, AmmoType, WeaponKind
 
 
 class PickupKind(enum.Enum):
@@ -50,6 +50,9 @@ _WEAPON_NAMES: dict[WeaponKind, str] = {
     WeaponKind.SNIPER_RIFLE: "Sniper Rifle",
     WeaponKind.GRENADE_LAUNCHER: "Grenade Launcher",
     WeaponKind.ROCKET_LAUNCHER: "Rocket Launcher",
+    WeaponKind.KNIFE: "Knife",
+    WeaponKind.SWORD: "Sword",
+    WeaponKind.AXE: "Axe",
 }
 
 
@@ -133,6 +136,9 @@ class Pickup(Entity):
             # Small circle + fuse line
             pygame.draw.circle(surface, self.color, (p.x, p.y), 2)
             pygame.draw.line(surface, self.color, (p.x, p.y - 2), (p.x + 2, p.y - 4), 1)
+        elif self.weapon_kind is not None and self.weapon_kind in MELEE_WEAPONS:
+            # Blade: diagonal line
+            pygame.draw.line(surface, self.color, (p.x - 3, p.y + 3), (p.x + 3, p.y - 3), 1)
         else:
             # Weapon: small gun silhouette (horizontal barrel + grip)
             pygame.draw.line(surface, self.color, (p.x - 4, p.y), (p.x + 4, p.y), 1)

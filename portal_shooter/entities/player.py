@@ -5,6 +5,7 @@ from pyglm import glm
 
 from portal_shooter.entities.entity import Entity
 from portal_shooter.particles import FadeOutParticle, ParticleEmitter
+from portal_shooter.weapons import MELEE_WEAPONS, WEAPON_STATS, WeaponKind
 
 
 DASH_SPEED = 200
@@ -26,6 +27,7 @@ class Player(Entity):
         "dash_cooldown",
         "dash_direction",
         "invincible",
+        "current_weapon_kind",
     ]
 
     def __init__(self, pos: glm.vec2, vel: glm.vec2) -> None:
@@ -42,6 +44,7 @@ class Player(Entity):
         self.dash_cooldown: float = 0.0
         self.dash_direction: glm.vec2 = glm.vec2()
         self.invincible: bool = False
+        self.current_weapon_kind: WeaponKind = WeaponKind.PISTOL
 
         self.emitter: ParticleEmitter = ParticleEmitter(
             pos=self.pos,
@@ -90,7 +93,11 @@ class Player(Entity):
         # draw the particles
         self.emitter.draw(surface, offset)
 
-        # draw the "gun"
-        pygame.draw.line(surface, (0, 200, 200), p + vec * 4, p + vec * 10, 1)
+        # draw weapon
+        if self.current_weapon_kind in MELEE_WEAPONS:
+            color = WEAPON_STATS[self.current_weapon_kind].color
+            pygame.draw.line(surface, color, p + vec * 3, p + vec * 7, 1)
+        else:
+            pygame.draw.line(surface, (0, 200, 200), p + vec * 4, p + vec * 10, 1)
         # draw the player
         pygame.draw.circle(surface, (0, 200, 0), p, 2)

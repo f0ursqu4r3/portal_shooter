@@ -77,6 +77,9 @@ class HUD:
             WeaponKind.SNIPER_RIFLE: "SNP",
             WeaponKind.GRENADE_LAUNCHER: "GL",
             WeaponKind.ROCKET_LAUNCHER: "RL",
+            WeaponKind.KNIFE: "KNF",
+            WeaponKind.SWORD: "SWD",
+            WeaponKind.AXE: "AXE",
         }
         self._weapon_labels: dict[WeaponKind, pygame.Surface] = {
             kind: self._font_sm.render(
