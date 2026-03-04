@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from portal_shooter.entities.bullet import Bullet
     from portal_shooter.entities.entity import Entity
     from portal_shooter.entities.grenade import Grenade
+    from portal_shooter.entities.rocket import Rocket
     from portal_shooter.entities.shell import Shell
 
 
@@ -134,7 +135,7 @@ class GameMap:
         assert self._wall_grid is not None
         return _collide_entity(entity, old_pos, self._wall_grid)
 
-    def collide_grenade(self, grenade: Grenade, old_pos: glm.vec2) -> bool:
+    def collide_grenade(self, grenade: Grenade | Rocket, old_pos: glm.vec2) -> bool:
         assert self._wall_grid is not None
         return _collide_grenade(grenade, old_pos, self._wall_grid)
 

@@ -7,7 +7,7 @@ import pygame
 from pyglm import glm
 
 from portal_shooter.entities.entity import Entity
-from portal_shooter.weapons import WEAPON_STATS, WeaponKind
+from portal_shooter.weapons import AMMO_COLORS, AMMO_NAMES, WEAPON_STATS, AmmoType, WeaponKind
 
 
 class PickupKind(enum.Enum):
@@ -46,11 +46,15 @@ _WEAPON_NAMES: dict[WeaponKind, str] = {
     WeaponKind.SHOTGUN: "Shotgun",
     WeaponKind.SMG: "SMG",
     WeaponKind.RIFLE: "Rifle",
+    WeaponKind.MACHINE_GUN: "Machine Gun",
+    WeaponKind.SNIPER_RIFLE: "Sniper Rifle",
+    WeaponKind.GRENADE_LAUNCHER: "Grenade Launcher",
+    WeaponKind.ROCKET_LAUNCHER: "Rocket Launcher",
 }
 
 
 class Pickup(Entity):
-    __slots__ = ["kind", "color", "age", "weapon_kind", "quantity"]
+    __slots__ = ["kind", "color", "age", "weapon_kind", "quantity", "ammo_type"]
 
     def __init__(
         self,
@@ -58,12 +62,16 @@ class Pickup(Entity):
         kind: PickupKind,
         weapon_kind: WeaponKind | None = None,
         quantity: int = 1,
+        ammo_type: AmmoType | None = None,
     ) -> None:
         super().__init__(pos)
         self.kind: PickupKind = kind
         self.weapon_kind: WeaponKind | None = weapon_kind
-        if weapon_kind is not None and kind in (PickupKind.WEAPON, PickupKind.AMMO):
-            self.color: tuple[int, int, int] = WEAPON_STATS[weapon_kind].color
+        self.ammo_type: AmmoType | None = ammo_type
+        if kind == PickupKind.AMMO and ammo_type is not None:
+            self.color: tuple[int, int, int] = AMMO_COLORS[ammo_type]
+        elif weapon_kind is not None and kind == PickupKind.WEAPON:
+            self.color = WEAPON_STATS[weapon_kind].color
         else:
             self.color = _COLORS.get(kind, (200, 200, 200))
         self.age: float = 0.0
@@ -73,9 +81,8 @@ class Pickup(Entity):
     def display_name(self) -> str:
         if self.kind == PickupKind.WEAPON and self.weapon_kind is not None:
             return _WEAPON_NAMES.get(self.weapon_kind, "Weapon")
-        if self.kind == PickupKind.AMMO and self.weapon_kind is not None:
-            wname = _WEAPON_NAMES.get(self.weapon_kind, "")
-            return f"{wname} Ammo"
+        if self.kind == PickupKind.AMMO and self.ammo_type is not None:
+            return f"{AMMO_NAMES[self.ammo_type]} Ammo"
         return _NAMES.get(self.kind, "Item")
 
     @property

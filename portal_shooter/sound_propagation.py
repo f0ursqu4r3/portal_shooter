@@ -1,22 +1,8 @@
 from __future__ import annotations
 
 import math
-from typing import NamedTuple
 
 from portal_shooter.map.spatial_grid import WallGrid
-
-
-class PortalData(NamedTuple):
-    pos_x: float
-    pos_y: float
-    normal_x: float
-    normal_y: float
-    exit_x: float
-    exit_y: float
-    line_ax: float
-    line_ay: float
-    line_bx: float
-    line_by: float
 
 
 def _count_wall_hits(
@@ -86,13 +72,9 @@ def compute_sound(
     source_x: float,
     source_y: float,
     wall_grid: WallGrid,
-    portals: tuple[PortalData, PortalData] | None,
     max_range: float = 400.0,
 ) -> tuple[float, float]:
-    """Compute (volume, pan) for a sound source using raytraced propagation.
-
-    Tries direct path and portal paths, returns the best result.
-    """
+    """Compute (volume, pan) for a sound source using raytraced propagation."""
     # Query walls around the midpoint between listener and source
     mid_x = (listener_x + source_x) * 0.5
     mid_y = (listener_y + source_y) * 0.5
@@ -107,59 +89,4 @@ def compute_sound(
     direct_vol = _attenuation(direct_dist, max_range) * _occlusion(direct_hits)
     direct_pan = _compute_pan(dx, dy, facing_x, facing_y)
 
-    best_vol = direct_vol
-    best_pan = direct_pan
-
-    # Short-circuit: clear line of sight and close — skip portal evaluation
-    if direct_hits == 0 and direct_dist < max_range * 0.5:
-        return (best_vol, best_pan)
-
-    # Portal paths (try both orderings: A→B and B→A)
-    if portals is not None:
-        for entry, exit_ in (portals, (portals[1], portals[0])):
-            # Check source is on front side of entry portal
-            to_source_x = source_x - entry.pos_x
-            to_source_y = source_y - entry.pos_y
-            if to_source_x * entry.normal_x + to_source_y * entry.normal_y <= 0:
-                continue
-
-            # Leg 1: source → entry exit point
-            leg1_dx = entry.exit_x - source_x
-            leg1_dy = entry.exit_y - source_y
-            leg1_dist = math.sqrt(leg1_dx * leg1_dx + leg1_dy * leg1_dy)
-
-            leg1_mid_x = (source_x + entry.exit_x) * 0.5
-            leg1_mid_y = (source_y + entry.exit_y) * 0.5
-            leg1_walls = wall_grid.query(
-                leg1_mid_x, leg1_mid_y, leg1_dist * 0.5 + 32.0
-            )
-            leg1_hits = _count_wall_hits(
-                source_x, source_y, entry.exit_x, entry.exit_y, leg1_walls
-            )
-
-            # Leg 2: exit portal exit point → listener
-            leg2_dx = listener_x - exit_.exit_x
-            leg2_dy = listener_y - exit_.exit_y
-            leg2_dist = math.sqrt(leg2_dx * leg2_dx + leg2_dy * leg2_dy)
-
-            leg2_mid_x = (exit_.exit_x + listener_x) * 0.5
-            leg2_mid_y = (exit_.exit_y + listener_y) * 0.5
-            leg2_walls = wall_grid.query(
-                leg2_mid_x, leg2_mid_y, leg2_dist * 0.5 + 32.0
-            )
-            leg2_hits = _count_wall_hits(
-                exit_.exit_x, exit_.exit_y, listener_x, listener_y, leg2_walls
-            )
-
-            total_dist = leg1_dist + leg2_dist
-            total_hits = leg1_hits + leg2_hits
-            portal_vol = _attenuation(total_dist, max_range) * _occlusion(total_hits)
-
-            if portal_vol > best_vol:
-                # Arrival direction is from exit portal toward listener
-                arrival_dx = exit_.exit_x - listener_x
-                arrival_dy = exit_.exit_y - listener_y
-                best_vol = portal_vol
-                best_pan = _compute_pan(arrival_dx, arrival_dy, facing_x, facing_y)
-
-    return (best_vol, best_pan)
+    return (direct_vol, direct_pan)

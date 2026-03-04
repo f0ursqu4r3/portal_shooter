@@ -5,7 +5,7 @@ from portal_shooter.entities.entity import Entity
 from portal_shooter.entities.exit_door import ExitDoor
 from portal_shooter.entities.pickup import Pickup, PickupKind
 from portal_shooter.entities.player import Player
-from portal_shooter.entities.portal import Portal
+from portal_shooter.entities.rocket import Rocket
 from portal_shooter.entities.shell import Shell
 
 __all__ = [
@@ -18,8 +18,8 @@ __all__ = [
     "Pickup",
     "PickupKind",
     "Player",
-    "Portal",
     "RangedEnemy",
+    "Rocket",
     "Shell",
     "Entity",
 ]

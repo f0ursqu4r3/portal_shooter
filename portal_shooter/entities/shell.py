@@ -21,11 +21,21 @@ def _build_shell(kind: WeaponKind) -> pygame.Surface:
         pygame.draw.rect(surf, (200, 180, 50), (0, 0, 1, 2))  # brass base
         pygame.draw.rect(surf, (180, 40, 30), (1, 0, 2, 2))  # red hull
         return surf
-    if kind == WeaponKind.RIFLE:
+    if kind in (WeaponKind.RIFLE, WeaponKind.SNIPER_RIFLE):
         # .308 casing: long, narrow, all brass with copper neck
         surf = pygame.Surface((4, 1), pygame.SRCALPHA)
         pygame.draw.rect(surf, (200, 180, 50), (0, 0, 2, 1))  # brass body
         pygame.draw.rect(surf, (200, 140, 60), (2, 0, 2, 1))  # copper neck
+        return surf
+    if kind == WeaponKind.MACHINE_GUN:
+        # Medium brass casing
+        surf = pygame.Surface((3, 1), pygame.SRCALPHA)
+        pygame.draw.rect(surf, (200, 180, 50), (0, 0, 3, 1))
+        return surf
+    if kind in (WeaponKind.GRENADE_LAUNCHER, WeaponKind.ROCKET_LAUNCHER):
+        # Large casing
+        surf = pygame.Surface((4, 2), pygame.SRCALPHA)
+        pygame.draw.rect(surf, (200, 180, 50), (0, 0, 4, 2))
         return surf
     # Pistol / SMG: small 9mm brass casing
     surf = pygame.Surface((2, 1), pygame.SRCALPHA)

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import pygame
 
-from portal_shooter.weapons import WEAPON_STATS, WeaponKind
+from portal_shooter.weapons import WEAPON_STATS, WeaponKind, WeaponStats
 
 if TYPE_CHECKING:
     from portal_shooter.game import Game
@@ -15,11 +15,10 @@ class HUD:
     __slots__ = [
         "_font_sm",
         "_font_md",
+        "_font_weapon_lg",
         "_label_hp",
         "_label_spd",
         "_label_ar",
-        "_label_q",
-        "_label_e",
         "_label_floor",
         "_cached_hp_text",
         "_cached_hp_val",
@@ -32,6 +31,7 @@ class HUD:
         "_timer",
         "_weapon_labels",
         "_weapon_labels_dim",
+        "_weapon_labels_lg",
         "_weapon_abbrevs",
         "_select_indicator",
     ]
@@ -39,6 +39,7 @@ class HUD:
     def __init__(self) -> None:
         self._font_sm: pygame.font.Font = pygame.font.Font("assets/fonts/homespun.ttf", 16)
         self._font_md: pygame.font.Font = pygame.font.Font("assets/fonts/homespun.ttf", 20)
+        self._font_weapon_lg: pygame.font.Font = pygame.font.Font("assets/fonts/homespun.ttf", 22)
 
         # Pre-render static labels (antialias=False for pixel font)
         self._label_hp: pygame.Surface = self._font_sm.render(
@@ -49,12 +50,6 @@ class HUD:
         )
         self._label_ar: pygame.Surface = self._font_sm.render(
             "AR", False, (100, 140, 200)
-        )
-        self._label_q: pygame.Surface = self._font_sm.render(
-            "Q:", False, (200, 200, 200)
-        )
-        self._label_e: pygame.Surface = self._font_sm.render(
-            "E:", False, (200, 200, 200)
         )
         self._label_floor: pygame.Surface = self._font_sm.render(
             "FL", False, (180, 180, 180)
@@ -78,7 +73,10 @@ class HUD:
             WeaponKind.SHOTGUN: "SHG",
             WeaponKind.SMG: "SMG",
             WeaponKind.RIFLE: "RFL",
-            WeaponKind.PORTAL_GUN: "PGL",
+            WeaponKind.MACHINE_GUN: "MG",
+            WeaponKind.SNIPER_RIFLE: "SNP",
+            WeaponKind.GRENADE_LAUNCHER: "GL",
+            WeaponKind.ROCKET_LAUNCHER: "RL",
         }
         self._weapon_labels: dict[WeaponKind, pygame.Surface] = {
             kind: self._font_sm.render(
@@ -91,6 +89,12 @@ class HUD:
                 abbr,
                 False,
                 tuple(c // 3 for c in WEAPON_STATS[kind].color),  # type: ignore[arg-type]
+            )
+            for kind, abbr in self._weapon_abbrevs.items()
+        }
+        self._weapon_labels_lg: dict[WeaponKind, pygame.Surface] = {
+            kind: self._font_weapon_lg.render(
+                abbr, False, WEAPON_STATS[kind].color
             )
             for kind, abbr in self._weapon_abbrevs.items()
         }
@@ -131,7 +135,6 @@ class HUD:
         self._draw_speed_buff(window, game)
         self._draw_floor(window, game)
         self._draw_weapon(window, game)
-        self._draw_portal_indicators(window, game)
         self._draw_minimap(window, game)
         self._draw_crosshair(window)
         self._draw_fps(window, game)
@@ -249,91 +252,76 @@ class HUD:
 
     def _draw_weapon(self, window: pygame.Surface, game: Game) -> None:
         owned = sorted(game.owned_weapons)
-        n = len(owned)
         row_h = 20
-        list_bottom = 685  # 7px gap above portal indicators at y=692
+        selected_row_h = 28
+        list_bottom = 692
 
-        # Anchor index: current weapon sits at index 1 (or 0 if only 1 weapon)
-        anchor = min(1, n - 1)
-        cur_idx = owned.index(game.current_weapon) if game.current_weapon in owned else 0
+        # Build ordered list: unselected weapons first, selected weapon last
+        others = [wk for wk in owned if wk != game.current_weapon]
+        ordered = others + [game.current_weapon]
 
-        # Rotate list so current weapon is at the anchor position
-        rotation = cur_idx - anchor
-        rotated: list[WeaponKind] = []
-        for i in range(n):
-            rotated.append(owned[(i + rotation) % n])
+        # Total height: unselected rows + one larger selected row
+        total_h = len(others) * row_h + selected_row_h
+        top_y = list_bottom - total_h
 
         x = 8
-        top_y = list_bottom - n * row_h
+        cur_y = top_y
 
-        for i, wk in enumerate(rotated):
-            y = top_y + i * row_h
+        for wk in ordered:
             is_selected = wk == game.current_weapon
 
             if is_selected:
-                window.blit(self._select_indicator, (x, y))
-                label = self._weapon_labels[wk]
+                # Larger selected weapon at the bottom
+                window.blit(self._select_indicator, (x, cur_y + 4))
+                label = self._weapon_labels_lg[wk]
                 ammo_color = (200, 200, 200)
+                label_x = x + 14
+                window.blit(label, (label_x, cur_y))
+
+                # Ammo text (larger font)
+                stats = WEAPON_STATS[wk]
+                ammo_str = self._get_ammo_str(game, wk, stats)
+                if game._reloading:
+                    pulse = int(self._timer * 6) % 2
+                    ammo_color = (120, 120, 120) if pulse else ammo_color
+                ammo_surf = self._font_weapon_lg.render(ammo_str, False, ammo_color)
+                ammo_x = label_x + label.get_width() + 8
+                window.blit(ammo_surf, (ammo_x, cur_y))
+
+                # Reload progress bar
+                if game._reloading and stats.reload_time > 0:
+                    bar_y = cur_y + selected_row_h - 3
+                    bar_w = 50
+                    bar_h = 2
+                    progress = 1.0 - game._reload_timer / stats.reload_time
+                    fill_w = max(0, int(bar_w * progress))
+                    pygame.draw.rect(window, (40, 40, 40), (ammo_x, bar_y, bar_w, bar_h))
+                    if fill_w > 0:
+                        pygame.draw.rect(window, stats.color, (ammo_x, bar_y, fill_w, bar_h))
+
+                cur_y += selected_row_h
             else:
                 label = self._weapon_labels_dim[wk]
                 ammo_color = (100, 100, 100)
+                label_x = x + 14
+                window.blit(label, (label_x, cur_y))
 
-            label_x = x + 14
-            window.blit(label, (label_x, y))
+                stats = WEAPON_STATS[wk]
+                ammo_str = self._get_ammo_str(game, wk, stats)
+                ammo_surf = self._font_sm.render(ammo_str, False, ammo_color)
+                ammo_x = label_x + label.get_width() + 6
+                window.blit(ammo_surf, (ammo_x, cur_y))
+                cur_y += row_h
 
-            # Ammo text
-            stats = WEAPON_STATS[wk]
-            if stats.ammo_per_shot == 0:
-                ammo_str = "\u221e"
-            elif stats.magazine_size > 0:
-                reserve = game._count_reserve_ammo(wk)
-                # Flash/dim text while reloading current weapon
-                if is_selected and game._reloading:
-                    pulse = int(self._timer * 6) % 2
-                    ammo_color = (120, 120, 120) if pulse else ammo_color
-                ammo_str = f"{game.ammo[wk]}|{reserve}"
-            else:
-                ammo_str = str(game.ammo[wk])
-
-            ammo_surf = self._font_sm.render(ammo_str, False, ammo_color)
-            ammo_x = label_x + label.get_width() + 6
-            window.blit(ammo_surf, (ammo_x, y))
-
-            # Reload progress bar for selected weapon
-            if is_selected and game._reloading and stats.reload_time > 0:
-                bar_y = y + row_h - 3
-                bar_w = 40
-                bar_h = 2
-                progress = 1.0 - game._reload_timer / stats.reload_time
-                fill_w = max(0, int(bar_w * progress))
-                pygame.draw.rect(window, (40, 40, 40), (ammo_x, bar_y, bar_w, bar_h))
-                if fill_w > 0:
-                    pygame.draw.rect(window, stats.color, (ammo_x, bar_y, fill_w, bar_h))
-
-    def _draw_portal_indicators(self, window: pygame.Surface, game: Game) -> None:
-        y = 692
-        portal_q = game.portals[0]
-        portal_e = game.portals[1]
-
-        # Q portal
-        x = 8
-        window.blit(self._label_q, (x, y))
-        q_cx, q_cy = x + 26, y + 8
-        q_color = (255, 127, 0) if portal_q else (60, 60, 60)
-        pygame.draw.circle(window, q_color, (q_cx, q_cy), 5)
-
-        # E portal
-        x2 = 56
-        window.blit(self._label_e, (x2, y))
-        e_cx, e_cy = x2 + 26, y + 8
-        e_color = (41, 174, 255) if portal_e else (60, 60, 60)
-        pygame.draw.circle(window, e_color, (e_cx, e_cy), 5)
-
-        # Connecting line when both active
-        if portal_q and portal_e:
-            pygame.draw.line(
-                window, (80, 80, 80), (q_cx + 6, q_cy), (e_cx - 6, e_cy), 1
-            )
+    @staticmethod
+    def _get_ammo_str(game: Game, wk: WeaponKind, stats: WeaponStats) -> str:
+        if stats.ammo_type is None:
+            return "\u221e"
+        elif stats.magazine_size > 0:
+            reserve = game._count_reserve_ammo(stats.ammo_type) if stats.ammo_type else 0
+            return f"{game.ammo[wk]}|{reserve}"
+        else:
+            return str(game.ammo[wk])
 
     def _draw_minimap(self, window: pygame.Surface, game: Game) -> None:
         if self._minimap_bg is None:
@@ -377,16 +365,6 @@ class HUD:
                 swx = mx + int(switch.pos.x * sx)
                 swy = my + int(switch.pos.y * sy)
                 pygame.draw.circle(window, (180, 100, 50), (swx, swy), 1)
-
-        # Portal dots
-        if game.portals[0]:
-            ox = mx + int(game.portals[0].pos.x * sx)
-            oy = my + int(game.portals[0].pos.y * sy)
-            pygame.draw.circle(window, (255, 127, 0), (ox, oy), 2)
-        if game.portals[1]:
-            bx = mx + int(game.portals[1].pos.x * sx)
-            by = my + int(game.portals[1].pos.y * sy)
-            pygame.draw.circle(window, (41, 174, 255), (bx, by), 2)
 
     def _draw_crosshair(self, window: pygame.Surface) -> None:
         if pygame.mouse.get_visible():

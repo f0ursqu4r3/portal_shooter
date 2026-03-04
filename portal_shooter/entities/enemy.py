@@ -7,12 +7,15 @@ import pygame
 from pyglm import glm
 
 from portal_shooter.entities.entity import Entity
+from portal_shooter.map.pathfinding import steer_toward
+from portal_shooter.map.spatial_grid import WallGrid
 from portal_shooter.particles import FadeOutParticle, ParticleEmitter
 
 
 class EnemyState(enum.Enum):
     IDLE = "idle"
     ROAMING = "roaming"
+    SUSPICIOUS = "suspicious"
     ALERT = "alert"
     PURSUING = "pursuing"
     ATTACKING = "attacking"
@@ -22,10 +25,14 @@ class EnemyState(enum.Enum):
 
 # How long an enemy stays alert after losing LOS before going idle
 _ALERT_TIMEOUT = 3.0
+# How long a suspicious enemy investigates before returning to idle
+_SUSPICIOUS_TIMEOUT = 4.0
 # How long a melee enemy retreats after landing an attack
 _RETREAT_DURATION = 0.4
 # LOS range — enemies can only "see" this far
 _SIGHT_RANGE = 120.0
+# Fuzzy position noise for suspicious state (±units)
+_SUSPICIOUS_NOISE = 30.0
 
 
 class Enemy(Entity):
@@ -43,6 +50,7 @@ class Enemy(Entity):
         "_path_timer",
         "_stun_timer",
         "_alert_timer",
+        "_suspicious_timer",
         "_roam_target",
         "_roam_timer",
         "_last_known_pos",
@@ -69,6 +77,7 @@ class Enemy(Entity):
         self._path_timer: float = 0.0
         self._stun_timer: float = 0.0
         self._alert_timer: float = 0.0
+        self._suspicious_timer: float = 0.0
         self._roam_target: glm.vec2 | None = None
         self._roam_timer: float = 0.0
         self._last_known_pos: glm.vec2 | None = None
@@ -100,13 +109,28 @@ class Enemy(Entity):
         return self.state != EnemyState.DEAD
 
     def hear_sound(self, source_pos: glm.vec2) -> None:
-        """React to a loud sound — become alert and investigate."""
+        """React to a loud sound — graduated alertness escalation."""
         if self.state in (EnemyState.DEAD, EnemyState.PURSUING, EnemyState.ATTACKING):
             return
-        self._last_known_pos = glm.vec2(source_pos)
-        self._alert_timer = _ALERT_TIMEOUT
         if self.state in (EnemyState.IDLE, EnemyState.ROAMING):
+            # First stimulus → suspicious (fuzzy position)
+            noise = glm.vec2(
+                random.uniform(-_SUSPICIOUS_NOISE, _SUSPICIOUS_NOISE),
+                random.uniform(-_SUSPICIOUS_NOISE, _SUSPICIOUS_NOISE),
+            )
+            self._last_known_pos = glm.vec2(source_pos) + noise
+            self._suspicious_timer = _SUSPICIOUS_TIMEOUT
+            self.state = EnemyState.SUSPICIOUS
+        elif self.state == EnemyState.SUSPICIOUS:
+            # Second stimulus → fully alert (exact position)
+            self._last_known_pos = glm.vec2(source_pos)
+            self._alert_timer = _ALERT_TIMEOUT
+            self._suspicious_timer = 0.0
             self.state = EnemyState.ALERT
+        elif self.state == EnemyState.ALERT:
+            # Already alert — refresh timer and update position
+            self._last_known_pos = glm.vec2(source_pos)
+            self._alert_timer = _ALERT_TIMEOUT
 
     def take_damage(
         self,
@@ -123,9 +147,10 @@ class Enemy(Entity):
         # position even if they can't see them yet.
         if source_pos is not None:
             self._last_known_pos = glm.vec2(source_pos)
-        if self.state in (EnemyState.IDLE, EnemyState.ROAMING):
+        if self.state in (EnemyState.IDLE, EnemyState.ROAMING, EnemyState.SUSPICIOUS):
             self.state = EnemyState.ALERT
             self._alert_timer = _ALERT_TIMEOUT
+            self._suspicious_timer = 0.0
         self.emitter.vel = glm.vec2(
             random.uniform(-1, 1), random.uniform(-1, 1)
         )
@@ -144,6 +169,12 @@ class Enemy(Entity):
         self._attack_timer = max(0.0, self._attack_timer - dt)
         self._path_timer = max(0.0, self._path_timer - dt)
         self._roam_timer = max(0.0, self._roam_timer - dt)
+
+        if self._suspicious_timer > 0:
+            self._suspicious_timer -= dt
+            if self._suspicious_timer <= 0 and self.state == EnemyState.SUSPICIOUS:
+                self.state = EnemyState.IDLE
+                self._last_known_pos = None
 
         if self._alert_timer > 0:
             self._alert_timer -= dt
@@ -175,6 +206,7 @@ class Enemy(Entity):
         player_pos: glm.vec2,
         has_los: bool,
         waypoint: glm.vec2 | None,
+        wall_grid: WallGrid | None = None,
     ) -> bool:
         """Update AI state. Returns True if enemy wants to fire (ranged only).
 
@@ -182,6 +214,7 @@ class Enemy(Entity):
                  the player is within sight range.
         waypoint: pathfinding waypoint toward _last_known_pos (NOT the live
                   player position). None if unaware.
+        wall_grid: spatial grid for wall avoidance via steer_toward().
         """
         if self.state == EnemyState.DEAD or self._stun_timer > 0:
             return False
@@ -213,7 +246,7 @@ class Enemy(Entity):
             if self._roam_target is not None:
                 diff = self._roam_target - self.pos
                 if glm.length(diff) > 3:
-                    self.vel = glm.normalize(diff) * self.speed * 0.4
+                    self.vel = self._steer(self._roam_target, self.speed * 0.4, wall_grid)
                 else:
                     self.state = EnemyState.IDLE
                     self._roam_timer = random.uniform(2.0, 5.0)
@@ -221,12 +254,23 @@ class Enemy(Entity):
             else:
                 self.state = EnemyState.IDLE
                 self.vel = glm.vec2()
+        elif self.state == EnemyState.SUSPICIOUS:
+            # Move toward fuzzy position at 40% speed, pausing periodically
+            if self._last_known_pos is not None and waypoint is not None:
+                # Pause for 0.3s every 1.5s
+                cycle = self._suspicious_timer % 1.5
+                if cycle < 0.3:
+                    self.vel = glm.vec2()
+                else:
+                    self.vel = self._steer(waypoint, self.speed * 0.4, wall_grid)
+            else:
+                self.vel = glm.vec2()
         elif self.state == EnemyState.ALERT:
             # Move toward last-known position via waypoint
             if waypoint is not None:
                 diff = waypoint - self.pos
                 if glm.length(diff) > 2:
-                    self.vel = glm.normalize(diff) * self.speed * 0.7
+                    self.vel = self._steer(waypoint, self.speed * 0.7, wall_grid)
                 else:
                     self.vel = glm.vec2()
             else:
@@ -236,19 +280,30 @@ class Enemy(Entity):
             if has_los:
                 diff = player_pos - self.pos
                 if glm.length(diff) > 2:
-                    self.vel = glm.normalize(diff) * self.speed
+                    self.vel = self._steer(player_pos, self.speed, wall_grid)
                 else:
                     self.vel = glm.vec2()
             elif waypoint is not None:
                 diff = waypoint - self.pos
                 if glm.length(diff) > 2:
-                    self.vel = glm.normalize(diff) * self.speed
+                    self.vel = self._steer(waypoint, self.speed, wall_grid)
                 else:
                     self.vel = glm.vec2()
             else:
                 self.vel = glm.vec2()
 
         return False
+
+    def _steer(
+        self, target: glm.vec2, speed: float, wall_grid: WallGrid | None
+    ) -> glm.vec2:
+        """Steer toward target with wall avoidance if wall_grid is available."""
+        if wall_grid is not None:
+            return steer_toward(self.pos, target, speed, wall_grid)
+        diff = target - self.pos
+        if glm.length(diff) < 1.0:
+            return glm.vec2()
+        return glm.normalize(diff) * speed
 
     def _draw_health_bar(self, surface: pygame.Surface, p: glm.vec2) -> None:
         if self.health >= self.max_health:
@@ -294,6 +349,7 @@ class MeleeEnemy(Enemy):
         player_pos: glm.vec2,
         has_los: bool,
         waypoint: glm.vec2 | None,
+        wall_grid: WallGrid | None = None,
     ) -> bool:
         if self.state == EnemyState.DEAD or self._stun_timer > 0:
             return False
@@ -332,7 +388,7 @@ class MeleeEnemy(Enemy):
             if self._roam_target is not None:
                 diff = self._roam_target - self.pos
                 if glm.length(diff) > 3:
-                    self.vel = glm.normalize(diff) * self.speed * 0.4
+                    self.vel = self._steer(self._roam_target, self.speed * 0.4, wall_grid)
                 else:
                     self.state = EnemyState.IDLE
                     self._roam_timer = random.uniform(2.0, 5.0)
@@ -340,23 +396,32 @@ class MeleeEnemy(Enemy):
             else:
                 self.state = EnemyState.IDLE
                 self.vel = glm.vec2()
+        elif self.state == EnemyState.SUSPICIOUS:
+            if self._last_known_pos is not None and waypoint is not None:
+                cycle = self._suspicious_timer % 1.5
+                if cycle < 0.3:
+                    self.vel = glm.vec2()
+                else:
+                    self.vel = self._steer(waypoint, self.speed * 0.4, wall_grid)
+            else:
+                self.vel = glm.vec2()
         elif self.state in (EnemyState.PURSUING, EnemyState.ATTACKING):
             if has_los:
-                direction = player_pos - self.pos
+                target = player_pos
             elif waypoint is not None:
-                direction = waypoint - self.pos
+                target = waypoint
             else:
-                direction = glm.vec2()
-            if glm.length(direction) > 1:
+                target = None
+            if target is not None and glm.length(target - self.pos) > 1:
                 speed = 70.0 if dist_to_player < 40 and has_los else self.speed
-                self.vel = glm.normalize(direction) * speed
+                self.vel = self._steer(target, speed, wall_grid)
             else:
                 self.vel = glm.vec2()
         elif self.state == EnemyState.ALERT:
             if waypoint is not None:
                 diff = waypoint - self.pos
                 if glm.length(diff) > 2:
-                    self.vel = glm.normalize(diff) * self.speed * 0.7
+                    self.vel = self._steer(waypoint, self.speed * 0.7, wall_grid)
                 else:
                     self.vel = glm.vec2()
             else:
@@ -400,6 +465,7 @@ class RangedEnemy(Enemy):
         player_pos: glm.vec2,
         has_los: bool,
         waypoint: glm.vec2 | None,
+        wall_grid: WallGrid | None = None,
     ) -> bool:
         if self.state == EnemyState.DEAD or self._stun_timer > 0:
             return False
@@ -415,15 +481,15 @@ class RangedEnemy(Enemy):
             if glm.length(direction) > 1:
                 norm_dir = glm.normalize(direction)
                 if dist_to_player < self.preferred_range * 0.5:
-                    # Too close — flee backwards
+                    # Too close — flee backwards (directional, no steer)
                     self.state = EnemyState.FLEEING
                     self.vel = -norm_dir * self.speed * 1.3
                 elif dist_to_player > self.preferred_range * 1.4:
                     # Too far — approach
                     self.state = EnemyState.PURSUING
-                    self.vel = norm_dir * self.speed
+                    self.vel = self._steer(player_pos, self.speed, wall_grid)
                 else:
-                    # In range — strafe and attack
+                    # In range — strafe and attack (directional, no steer)
                     self.state = EnemyState.ATTACKING
                     perp = glm.vec2(-norm_dir.y, norm_dir.x)
                     self.vel = perp * self.speed * 0.7
@@ -440,9 +506,18 @@ class RangedEnemy(Enemy):
             if waypoint is not None:
                 diff = waypoint - self.pos
                 if glm.length(diff) > 2:
-                    self.vel = glm.normalize(diff) * self.speed
+                    self.vel = self._steer(waypoint, self.speed, wall_grid)
                 else:
                     self.vel = glm.vec2()
+            else:
+                self.vel = glm.vec2()
+        elif self.state == EnemyState.SUSPICIOUS:
+            if self._last_known_pos is not None and waypoint is not None:
+                cycle = self._suspicious_timer % 1.5
+                if cycle < 0.3:
+                    self.vel = glm.vec2()
+                else:
+                    self.vel = self._steer(waypoint, self.speed * 0.4, wall_grid)
             else:
                 self.vel = glm.vec2()
         elif self.state == EnemyState.ALERT:
@@ -454,7 +529,7 @@ class RangedEnemy(Enemy):
             elif waypoint is not None:
                 diff = waypoint - self.pos
                 if glm.length(diff) > 2:
-                    self.vel = glm.normalize(diff) * self.speed
+                    self.vel = self._steer(waypoint, self.speed, wall_grid)
                 else:
                     self.vel = glm.vec2()
         elif self.state == EnemyState.IDLE:
@@ -466,7 +541,7 @@ class RangedEnemy(Enemy):
             if self._roam_target is not None:
                 diff = self._roam_target - self.pos
                 if glm.length(diff) > 3:
-                    self.vel = glm.normalize(diff) * self.speed * 0.4
+                    self.vel = self._steer(self._roam_target, self.speed * 0.4, wall_grid)
                 else:
                     self.state = EnemyState.IDLE
                     self._roam_timer = random.uniform(2.0, 5.0)

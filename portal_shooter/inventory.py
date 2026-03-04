@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from portal_shooter.entities.pickup import PickupKind, _COLORS
-from portal_shooter.weapons import WEAPON_STATS, WeaponKind
+from portal_shooter.weapons import AMMO_COLORS, WEAPON_STATS, AmmoType, WeaponKind
 
 if TYPE_CHECKING:
     from portal_shooter.entities.pickup import Pickup
@@ -21,19 +21,24 @@ class InventoryItem:
     weapon_kind: WeaponKind | None
     color: tuple[int, int, int]
     quantity: int = 1
+    ammo_type: AmmoType | None = None
 
     @property
     def stackable(self) -> bool:
         return self.kind in _STACKABLE
 
     def matches(self, other: InventoryItem) -> bool:
-        return self.kind == other.kind and self.weapon_kind == other.weapon_kind
+        if self.kind != other.kind:
+            return False
+        if self.kind == PickupKind.AMMO:
+            return self.ammo_type == other.ammo_type
+        return self.weapon_kind == other.weapon_kind
 
     @staticmethod
     def from_pickup(pickup: Pickup) -> InventoryItem:
-        if pickup.weapon_kind is not None and pickup.kind in (
-            PickupKind.WEAPON, PickupKind.AMMO
-        ):
+        if pickup.kind == PickupKind.AMMO and pickup.ammo_type is not None:
+            color = AMMO_COLORS[pickup.ammo_type]
+        elif pickup.weapon_kind is not None and pickup.kind == PickupKind.WEAPON:
             color = WEAPON_STATS[pickup.weapon_kind].color
         else:
             color = _COLORS[pickup.kind]
@@ -42,6 +47,7 @@ class InventoryItem:
             weapon_kind=pickup.weapon_kind,
             color=color,
             quantity=pickup.quantity,
+            ammo_type=pickup.ammo_type,
         )
 
 
@@ -107,7 +113,78 @@ class Inventory:
             weapon_kind=item.weapon_kind,
             color=item.color,
             quantity=split_qty,
+            ammo_type=item.ammo_type,
         )
+
+    def merge_stacks(self) -> None:
+        """Merge all matching stackable items into as few stacks as possible."""
+        # Collect all items grouped by match key
+        groups: dict[tuple[str, ...], list[int]] = {}
+        for i, slot in enumerate(self.slots):
+            if slot is None or not slot.stackable:
+                continue
+            if slot.kind == PickupKind.AMMO:
+                key = (slot.kind.value, str(slot.ammo_type))
+            else:
+                key = (slot.kind.value, str(slot.weapon_kind))
+            groups.setdefault(key, []).append(i)
+
+        for indices in groups.values():
+            if len(indices) < 2:
+                continue
+            # Sum total quantity
+            total = 0
+            for i in indices:
+                item = self.slots[i]
+                assert item is not None
+                total += item.quantity
+            # Refill from first slot onward
+            template = self.slots[indices[0]]
+            assert template is not None
+            for i in indices:
+                if total <= 0:
+                    self.slots[i] = None
+                else:
+                    item = self.slots[i]
+                    assert item is not None
+                    fill = min(total, MAX_STACK)
+                    item.quantity = fill
+                    total -= fill
+            # Clear any leftover empty slots
+            for i in indices:
+                item = self.slots[i]
+                if item is not None and item.quantity <= 0:
+                    self.slots[i] = None
+
+    def arrange(self) -> None:
+        """Auto-arrange inventory: merge stacks first, then sort by kind."""
+        self.merge_stacks()
+        # Collect non-None items
+        items = [s for s in self.slots if s is not None]
+        # Sort order: weapons first, then ammo, then consumables, then rest
+        _kind_order = {
+            PickupKind.WEAPON: 0,
+            PickupKind.AMMO: 1,
+            PickupKind.HEALTH: 2,
+            PickupKind.ARMOR: 3,
+            PickupKind.SPEED: 4,
+            PickupKind.GRENADE: 5,
+            PickupKind.KEY: 6,
+        }
+
+        def sort_key(item: InventoryItem) -> tuple[int, int, int]:
+            primary = _kind_order.get(item.kind, 99)
+            # Secondary: weapon_kind int value or ammo_type ordinal
+            if item.weapon_kind is not None:
+                secondary = int(item.weapon_kind)
+            elif item.ammo_type is not None:
+                secondary = list(AmmoType).index(item.ammo_type)
+            else:
+                secondary = 0
+            return (primary, secondary, -item.quantity)
+
+        items.sort(key=sort_key)
+        self.slots = items + [None] * (SLOT_COUNT - len(items))
 
     def swap(self, a: int, b: int) -> None:
         item_a = self.slots[a]

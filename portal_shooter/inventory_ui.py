@@ -8,7 +8,7 @@ from pyglm import glm
 
 from portal_shooter.entities.pickup import Pickup, PickupKind
 from portal_shooter.inventory import MAX_STACK, Inventory, InventoryItem
-from portal_shooter.weapons import WEAPON_STATS, WeaponKind
+from portal_shooter.weapons import AMMO_NAMES, WEAPON_STATS, WeaponKind
 
 if TYPE_CHECKING:
     from portal_shooter.game import Game
@@ -23,12 +23,23 @@ SLOT_PAD = 4
 GRID_X = PANEL_X + 12
 GRID_Y = 48  # below title
 
+# Button layout below the grid
+_BTN_Y = GRID_Y + ROWS * (SLOT_SIZE + SLOT_PAD) + 8
+_BTN_W = 88
+_BTN_H = 22
+_BTN_PAD = 8
+_BTN_MERGE_X = GRID_X
+_BTN_ARRANGE_X = GRID_X + _BTN_W + _BTN_PAD
+
 _WEAPON_ABBREVS: dict[WeaponKind, str] = {
     WeaponKind.PISTOL: "PST",
     WeaponKind.SHOTGUN: "SHG",
     WeaponKind.SMG: "SMG",
     WeaponKind.RIFLE: "RFL",
-    WeaponKind.PORTAL_GUN: "PGL",
+    WeaponKind.MACHINE_GUN: "MG",
+    WeaponKind.SNIPER_RIFLE: "SNP",
+    WeaponKind.GRENADE_LAUNCHER: "GL",
+    WeaponKind.ROCKET_LAUNCHER: "RL",
 }
 
 
@@ -45,6 +56,10 @@ class InventoryUI:
         "_drag_offset",
         "_drag_is_split",
         "_hover_slot",
+        "_btn_merge_rect",
+        "_btn_arrange_rect",
+        "_btn_merge_label",
+        "_btn_arrange_label",
     ]
 
     def __init__(self) -> None:
@@ -77,6 +92,20 @@ class InventoryUI:
 
         # Hover
         self._hover_slot: int | None = None
+
+        # Buttons
+        self._btn_merge_rect: pygame.Rect = pygame.Rect(
+            _BTN_MERGE_X, _BTN_Y, _BTN_W, _BTN_H
+        )
+        self._btn_arrange_rect: pygame.Rect = pygame.Rect(
+            _BTN_ARRANGE_X, _BTN_Y, _BTN_W, _BTN_H
+        )
+        self._btn_merge_label: pygame.Surface = self._font_sm.render(
+            "Merge", False, (180, 175, 190)
+        )
+        self._btn_arrange_label: pygame.Surface = self._font_sm.render(
+            "Arrange", False, (180, 175, 190)
+        )
 
     @property
     def is_open(self) -> bool:
@@ -144,6 +173,13 @@ class InventoryUI:
             return False
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            # Check buttons first
+            if self._btn_merge_rect.collidepoint(mx, my):
+                inv.merge_stacks()
+                return True
+            if self._btn_arrange_rect.collidepoint(mx, my):
+                inv.arrange()
+                return True
             slot = self.slot_at_pos(mx, my)
             if slot is not None and inv.slots[slot] is not None:
                 self._drag_from = slot
@@ -234,6 +270,7 @@ class InventoryUI:
             item.kind,
             weapon_kind=item.weapon_kind,
             quantity=item.quantity,
+            ammo_type=item.ammo_type,
         )
         game.pickups.append(pickup)
 
@@ -315,6 +352,10 @@ class InventoryUI:
             if self._drag_item.quantity > 1:
                 self._draw_quantity(window, self._drag_item.quantity, drag_rect)
 
+        # Buttons
+        self._draw_button(window, self._btn_merge_rect, self._btn_merge_label, mx, my)
+        self._draw_button(window, self._btn_arrange_rect, self._btn_arrange_label, mx, my)
+
         # Tooltip on hover
         if (
             hover is not None
@@ -324,6 +365,23 @@ class InventoryUI:
             hover_item = inv.slots[hover]
             assert hover_item is not None
             self._draw_tooltip(window, hover_item, mx, my)
+
+    def _draw_button(
+        self,
+        surface: pygame.Surface,
+        rect: pygame.Rect,
+        label: pygame.Surface,
+        mx: int,
+        my: int,
+    ) -> None:
+        hovered = rect.collidepoint(mx, my)
+        bg = (50, 45, 55) if hovered else (35, 32, 40)
+        border = (80, 75, 90) if hovered else (55, 50, 60)
+        pygame.draw.rect(surface, bg, rect)
+        pygame.draw.rect(surface, border, rect, 1)
+        lx = rect.x + (rect.width - label.get_width()) // 2
+        ly = rect.y + (rect.height - label.get_height()) // 2
+        surface.blit(label, (lx, ly))
 
     def _draw_quantity(
         self, surface: pygame.Surface, quantity: int, rect: pygame.Rect
@@ -361,12 +419,12 @@ class InventoryUI:
             pygame.draw.polygon(surface, color, pts, 2)
 
         elif item.kind == PickupKind.AMMO:
-            # Square outline in weapon color
+            # Square outline in ammo color
             s = 7
             pygame.draw.rect(surface, color, (cx - s, cy - s, s * 2, s * 2), 2)
-            # Weapon abbreviation below
-            if item.weapon_kind is not None:
-                abbr = _WEAPON_ABBREVS.get(item.weapon_kind, "???")
+            # Ammo type abbreviation below
+            if item.ammo_type is not None:
+                abbr = AMMO_NAMES.get(item.ammo_type, "???")
                 text = self._font_sm.render(abbr, False, color)
                 surface.blit(
                     text,
@@ -431,9 +489,9 @@ class InventoryUI:
         elif item.kind == PickupKind.GRENADE:
             text = "Throw: G key"
         elif item.kind == PickupKind.AMMO:
-            if item.weapon_kind is not None:
-                abbr = _WEAPON_ABBREVS.get(item.weapon_kind, "???")
-                text = f"{abbr} Reserve"
+            if item.ammo_type is not None:
+                name = AMMO_NAMES.get(item.ammo_type, "???")
+                text = f"{name} Reserve"
             else:
                 text = "Reserve Ammo"
         else:

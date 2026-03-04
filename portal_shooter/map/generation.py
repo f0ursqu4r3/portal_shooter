@@ -475,7 +475,11 @@ def generate_pickup_positions(
     ]
     random.shuffle(qualifying)
 
-    weapon_types = ["shotgun", "smg", "rifle"]
+    weapon_types = [
+        "shotgun", "smg", "rifle",
+        "machine_gun", "sniper_rifle", "grenade_launcher", "rocket_launcher",
+    ]
+    ammo_types = ["light", "medium", "heavy", "shells", "grenade", "rocket"]
     positions: list[tuple[glm.vec2, str, str | None]] = []
 
     for i, room in enumerate(qualifying):
@@ -495,7 +499,7 @@ def generate_pickup_positions(
             elif roll < 0.65:
                 positions.append((pos, "grenade", None))
             else:
-                ammo_type = random.choice(weapon_types)
+                ammo_type = random.choice(ammo_types)
                 positions.append((pos, "ammo", ammo_type))
 
     return positions

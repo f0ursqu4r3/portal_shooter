@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from portal_shooter.entities.bullet import Bullet
     from portal_shooter.entities.entity import Entity
     from portal_shooter.entities.grenade import Grenade
+    from portal_shooter.entities.rocket import Rocket
     from portal_shooter.entities.shell import Shell
 
 
@@ -198,7 +199,7 @@ def collide_entity(
 
 
 def collide_grenade(
-    grenade: Grenade, old_pos: glm.vec2, wall_grid: WallGrid,
+    grenade: Grenade | Rocket, old_pos: glm.vec2, wall_grid: WallGrid,
 ) -> bool:
     """Bounce grenade off walls. Returns True if a wall was hit."""
     epx: float = grenade.pos.x
