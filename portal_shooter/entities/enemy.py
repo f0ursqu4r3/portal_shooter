@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+import math
 import random
 
 import pygame
@@ -558,4 +559,139 @@ class RangedEnemy(Enemy):
         pygame.draw.rect(
             surface, (140, 60, 180), (p.x - 3, p.y - 3, 6, 6)
         )
+        self._draw_health_bar(surface, p)
+
+
+EXPLODER_DAMAGE = 40
+EXPLODER_RADIUS = 35
+
+
+class ExploderEnemy(Enemy):
+    __slots__ = ["_exploded", "_explosion_done", "_pulse_timer"]
+
+    def __init__(self, pos: glm.vec2) -> None:
+        super().__init__(pos, speed=55, health=15, damage=0)
+        self._exploded: bool = False
+        self._explosion_done: bool = False
+        self._pulse_timer: float = 0.0
+        self.emitter.particle_kwargs = {"color": (220, 50, 30)}
+
+    @property
+    def exploded(self) -> bool:
+        return self._exploded
+
+    def take_damage(
+        self,
+        amount: int,
+        knockback: glm.vec2 | None = None,
+        source_pos: glm.vec2 | None = None,
+    ) -> None:
+        super().take_damage(amount, knockback, source_pos)
+        if self.health <= 0:
+            self._exploded = True
+
+    def update(self, dt: float) -> None:
+        super().update(dt)
+        if self.state in (EnemyState.PURSUING, EnemyState.ATTACKING):
+            self._pulse_timer += dt
+
+    def update_ai(
+        self,
+        player_pos: glm.vec2,
+        has_los: bool,
+        waypoint: glm.vec2 | None,
+        wall_grid: WallGrid | None = None,
+    ) -> bool:
+        if self.state == EnemyState.DEAD or self._stun_timer > 0:
+            return False
+
+        dist_to_player = glm.distance(self.pos, player_pos)
+
+        # --- Acquire / refresh awareness ---
+        if has_los:
+            self._last_known_pos = glm.vec2(player_pos)
+            self._alert_timer = _ALERT_TIMEOUT
+            if dist_to_player < 12:
+                # Self-destruct
+                self._exploded = True
+                self.health = 0
+                self.state = EnemyState.DEAD
+                self.emitter.vel = None
+                self.emitter.burst(15)
+                return False
+            self.state = EnemyState.PURSUING
+        elif self.state in (EnemyState.PURSUING, EnemyState.ATTACKING):
+            self.state = EnemyState.ALERT
+            self._alert_timer = _ALERT_TIMEOUT
+        elif self.state == EnemyState.ALERT and self._alert_timer <= 0:
+            self.state = EnemyState.IDLE
+            self._last_known_pos = None
+            self.target_waypoint = None
+
+        # Idle → roaming
+        if self.state == EnemyState.IDLE and self._roam_timer <= 0:
+            self.state = EnemyState.ROAMING
+            self._pick_roam_target()
+
+        # --- Execute behavior ---
+        if self.state == EnemyState.IDLE:
+            self.vel = glm.vec2()
+        elif self.state == EnemyState.ROAMING:
+            if self._roam_target is not None:
+                diff = self._roam_target - self.pos
+                if glm.length(diff) > 3:
+                    self.vel = self._steer(self._roam_target, self.speed * 0.4, wall_grid)
+                else:
+                    self.state = EnemyState.IDLE
+                    self._roam_timer = random.uniform(2.0, 5.0)
+                    self.vel = glm.vec2()
+            else:
+                self.state = EnemyState.IDLE
+                self.vel = glm.vec2()
+        elif self.state == EnemyState.SUSPICIOUS:
+            if self._last_known_pos is not None and waypoint is not None:
+                cycle = self._suspicious_timer % 1.5
+                if cycle < 0.3:
+                    self.vel = glm.vec2()
+                else:
+                    self.vel = self._steer(waypoint, self.speed * 0.4, wall_grid)
+            else:
+                self.vel = glm.vec2()
+        elif self.state == EnemyState.PURSUING:
+            # Charge directly toward player/waypoint at full speed
+            if has_los:
+                target = player_pos
+            elif waypoint is not None:
+                target = waypoint
+            else:
+                target = None
+            if target is not None and glm.length(target - self.pos) > 1:
+                self.vel = self._steer(target, self.speed, wall_grid)
+            else:
+                self.vel = glm.vec2()
+        elif self.state == EnemyState.ALERT:
+            if waypoint is not None:
+                diff = waypoint - self.pos
+                if glm.length(diff) > 2:
+                    self.vel = self._steer(waypoint, self.speed * 0.7, wall_grid)
+                else:
+                    self.vel = glm.vec2()
+            else:
+                self.vel = glm.vec2()
+
+        return False
+
+    def draw(self, surface: pygame.Surface, offset: glm.vec2 = glm.vec2()) -> None:
+        self.emitter.draw(surface, offset)
+        if self.state == EnemyState.DEAD:
+            return
+        p = self.pos - offset
+        px, py = int(p.x), int(p.y)
+        # Red circle
+        pygame.draw.circle(surface, (220, 50, 30), (px, py), 3)
+        # Pulsing glow ring when pursuing/attacking
+        if self.state in (EnemyState.PURSUING, EnemyState.ATTACKING):
+            pulse = 0.5 + 0.5 * math.sin(self._pulse_timer * 8.0)
+            alpha = int(80 + 80 * pulse)
+            pygame.draw.circle(surface, (255, 80, 30, alpha), (px, py), 5, 1)
         self._draw_health_bar(surface, p)

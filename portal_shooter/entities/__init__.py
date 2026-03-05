@@ -1,6 +1,6 @@
 from portal_shooter.entities.bullet import Bullet
 from portal_shooter.entities.camera import Camera
-from portal_shooter.entities.enemy import Enemy, EnemyState, MeleeEnemy, RangedEnemy
+from portal_shooter.entities.enemy import Enemy, EnemyState, ExploderEnemy, MeleeEnemy, RangedEnemy
 from portal_shooter.entities.entity import Entity
 from portal_shooter.entities.exit_door import ExitDoor
 from portal_shooter.entities.pickup import Pickup, PickupKind
@@ -13,6 +13,7 @@ __all__ = [
     "Camera",
     "Enemy",
     "EnemyState",
+    "ExploderEnemy",
     "ExitDoor",
     "MeleeEnemy",
     "Pickup",

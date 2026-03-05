@@ -4,6 +4,7 @@ import cProfile
 import math
 import pstats
 import random
+from collections.abc import Callable
 
 import pygame
 from pyglm import glm
@@ -14,6 +15,7 @@ from portal_shooter.entities import (
     Enemy,
     EnemyState,
     ExitDoor,
+    ExploderEnemy,
     MeleeEnemy,
     Pickup,
     PickupKind,
@@ -24,7 +26,7 @@ from portal_shooter.entities import (
 )
 from portal_shooter.entities.crate import Crate
 from portal_shooter.entities.door import Door, Switch
-from portal_shooter.entities.enemy import _SIGHT_RANGE
+from portal_shooter.entities.enemy import EXPLODER_DAMAGE, EXPLODER_RADIUS, _SIGHT_RANGE
 from portal_shooter.entities.grenade import GRENADE_DAMAGE, GRENADE_RADIUS, Grenade
 from portal_shooter.entities.pickup import PICKUP_RANGE
 from portal_shooter.entities.rocket import ROCKET_DAMAGE, ROCKET_RADIUS
@@ -225,6 +227,22 @@ class Game:
             "assets/fonts/homespun.ttf", 14
         )
 
+        # Upgrade screen state
+        self._upgrade_screen: bool = False
+        self._upgrade_choices: list[tuple[str, str, Callable[[], None]]] = []
+        self._upgrade_font: pygame.font.Font = pygame.font.Font(
+            "assets/fonts/homespun.ttf", 12
+        )
+        self._upgrade_title_font: pygame.font.Font = pygame.font.Font(
+            "assets/fonts/homespun.ttf", 24
+        )
+
+        # Permanent run modifiers
+        self._damage_mul: float = 1.0
+        self._fire_rate_mul: float = 1.0
+        self._has_regen: bool = False
+        self._regen_timer: float = 0.0
+
         # Level progression
         self.level: LevelState = LevelState()
         self.exit_door: ExitDoor | None = None
@@ -347,10 +365,13 @@ class Game:
                         continue
 
                 enemy: Enemy
-                if random.random() < 0.6:
+                roll = random.random()
+                if roll < 0.50:
                     enemy = MeleeEnemy(pos)
-                else:
+                elif roll < 0.85:
                     enemy = RangedEnemy(pos)
+                else:
+                    enemy = ExploderEnemy(pos)
 
                 enemy.health = int(enemy.health * health_mul)
                 enemy.max_health = enemy.health
@@ -399,9 +420,56 @@ class Game:
         ))
         self._impact_emitters.clear()
         self._damage_numbers.clear()
+        # Reset upgrade state
+        self._damage_mul = 1.0
+        self._fire_rate_mul = 1.0
+        self._has_regen = False
+        self._regen_timer = 0.0
+        self._upgrade_screen = False
+        self._upgrade_choices = []
+        self.player.max_health = 100
+        self.player.health = 100
+        self.player.max_armor = 50
+        self.player.armor = 0
+        self.player.speed = 50
         self.level = LevelState()
         self.setup_floor()
         pygame.mouse.set_visible(False)
+
+    def _generate_upgrade_choices(
+        self,
+    ) -> list[tuple[str, str, "Callable[[], None]"]]:
+        """Return 3 random upgrade options as (name, description, apply_fn) tuples."""
+        pool: list[tuple[str, str, Callable[[], None]]] = [
+            ("+20 Max HP", "Increase max health by 20\nand heal 20 HP", self._upgrade_hp),
+            ("+15 Max Armor", "Increase max armor by 15\nand gain 15 armor", self._upgrade_armor),
+            ("+5 Speed", "Increase movement\nspeed by 5", self._upgrade_speed),
+            ("+10% Damage", "All weapons deal\n10% more damage", self._upgrade_damage),
+            ("Faster Fire Rate", "All weapons fire\n15% faster", self._upgrade_fire_rate),
+        ]
+        if not self._has_regen:
+            pool.append(("Regeneration", "Slowly regenerate\n1 HP every 3 seconds", self._upgrade_regen))
+        return random.sample(pool, min(3, len(pool)))
+
+    def _upgrade_hp(self) -> None:
+        self.player.max_health += 20
+        self.player.health = min(self.player.health + 20, self.player.max_health)
+
+    def _upgrade_armor(self) -> None:
+        self.player.max_armor += 15
+        self.player.armor = min(self.player.armor + 15, self.player.max_armor)
+
+    def _upgrade_speed(self) -> None:
+        self.player.speed += 5
+
+    def _upgrade_damage(self) -> None:
+        self._damage_mul += 0.10
+
+    def _upgrade_fire_rate(self) -> None:
+        self._fire_rate_mul *= 0.85
+
+    def _upgrade_regen(self) -> None:
+        self._has_regen = True
 
     def _apply_damage(self, amount: int) -> None:
         """Apply damage to player: armor absorbs first, then health."""
@@ -432,7 +500,7 @@ class Game:
 
         self.process_pygame_events()
 
-        if self._dead or self._paused:
+        if self._dead or self._paused or self._upgrade_screen:
             return
 
         if not self.player.is_dashing:
@@ -503,7 +571,7 @@ class Game:
                             self.player.pos + pellet_dir * 15,
                             pellet_dir,
                             speed=stats.bullet_speed,
-                            damage=stats.damage,
+                            damage=int(stats.damage * self._damage_mul),
                             piercing=stats.piercing,
                             color=stats.color,
                         )
@@ -539,11 +607,9 @@ class Game:
 
                 self.camera.shake = glm.vec2(shake)
 
-                rate = (
-                    stats.fire_rate / 2
-                    if self.speed_buff_timer > 0
-                    else stats.fire_rate
-                )
+                rate = stats.fire_rate * self._fire_rate_mul
+                if self.speed_buff_timer > 0:
+                    rate /= 2
                 self.shot_timer = rate
                 self.time_scale = 0.2
 
@@ -574,6 +640,15 @@ class Game:
                 if self._paused and event.key == pygame.K_q:
                     self.running = False
                     continue
+
+            if self._upgrade_screen:
+                if (
+                    event.type == pygame.MOUSEBUTTONDOWN
+                    and event.button == 1
+                ):
+                    mx, my = event.pos
+                    self._handle_upgrade_click(mx, my)
+                continue
 
             if self._dead or self._paused:
                 continue
@@ -679,7 +754,7 @@ class Game:
     def update(self) -> None:
         tdt = min(self.clock.tick() * 0.001, 0.05)
 
-        if self._paused:
+        if self._paused or self._upgrade_screen:
             return
 
         if self.player.health <= 0 and not self._dead:
@@ -830,12 +905,20 @@ class Game:
             dmg.update(dt)
         self._damage_numbers = [d for d in self._damage_numbers if d.alive]
 
+        # Regeneration tick
+        if self._has_regen and self.player.health > 0:
+            self._regen_timer += dt
+            if self._regen_timer >= 3.0:
+                self._regen_timer -= 3.0
+                if self.player.health < self.player.max_health:
+                    self.player.health = min(self.player.health + 1, self.player.max_health)
+
         # Exit door
         if self.exit_door is not None:
             self.exit_door.update(dt)
             if self.exit_door.active and self.exit_door.in_range(self.player.pos):
-                self.level.advance_floor()
-                self.setup_floor()
+                self._upgrade_choices = self._generate_upgrade_choices()
+                self._upgrade_screen = True
 
     def _update_enemies(self, dt: float) -> None:
         """Update all enemies: pathfinding, AI, collision, damage."""
@@ -853,6 +936,14 @@ class Game:
         for enemy in self.enemies:
             if not enemy.alive:
                 enemy.update(dt)
+                # Handle exploder detonation
+                if (
+                    isinstance(enemy, ExploderEnemy)
+                    and enemy.exploded
+                    and not enemy._explosion_done
+                ):
+                    enemy._explosion_done = True
+                    self._detonate_exploder(enemy)
                 # Keep dead enemies briefly for particle effects
                 if not enemy.emitter.particles:
                     dead_enemies.append(enemy)
@@ -1031,6 +1122,7 @@ class Game:
         stats = WEAPON_STATS[self.current_weapon]
         fire_vec = glm.normalize(self.mpos_world - self.player.pos)
         attack_angle = math.atan2(fire_vec.y, fire_vec.x)
+        hit_count = 0
 
         # Hit enemies in range/arc
         for enemy in self.enemies:
@@ -1047,11 +1139,25 @@ class Game:
                 continue
             kb_dir = glm.normalize(enemy.pos - self.player.pos) if dist > 0.1 else fire_vec
             enemy.take_damage(
-                stats.damage,
+                int(stats.damage * self._damage_mul),
                 knockback=kb_dir * stats.melee_knockback,
                 source_pos=self.player.pos,
             )
-            self._damage_numbers.append(_DamageNumber(enemy.pos, stats.damage))
+            self._damage_numbers.append(
+                _DamageNumber(enemy.pos, int(stats.damage * self._damage_mul))
+            )
+            hit_count += 1
+            # Impact spark
+            spark = ParticleEmitter(
+                pos=glm.vec2(enemy.pos),
+                vel=None,
+                spawn_rate=0,
+                shape=ParticleEmitter.Circle(3),
+                particle_class=FadeOutParticle,
+                particle_kwargs={"color": stats.color},
+            )
+            spark.burst(random.randint(3, 6))
+            self._impact_emitters.append(spark)
             if not stats.piercing:
                 break
 
@@ -1068,7 +1174,17 @@ class Game:
             diff = (crate_angle - attack_angle + math.pi) % (2 * math.pi) - math.pi
             if abs(diff) > stats.melee_arc_half:
                 continue
-            crate.take_damage(stats.damage)
+            crate.take_damage(int(stats.damage * self._damage_mul))
+            if not crate.alive:
+                self._destroy_crate(crate)
+            hit_count += 1
+
+        # Screen shake + lunge on hit
+        if hit_count > 0:
+            shake_strength = min(stats.melee_knockback * 0.08, 3.0)
+            self.camera.shake = fire_vec * -shake_strength
+            lunge = min(stats.melee_knockback * 0.15, 5.0)
+            self.player.pos += fire_vec * lunge
 
         # Set melee flash state
         self._melee_flash_timer = 0.1
@@ -1078,12 +1194,17 @@ class Game:
         self._melee_flash_style = stats.melee_style
         self._melee_flash_color = stats.color
 
-        self.sound_player.play("Shoot1")
+        if stats.melee_style == MeleeStyle.STAB:
+            self.sound_player.play_random("Ricochet", volume=0.5)
+        else:
+            self.sound_player.play("Hurt1", volume=0.6)
         self._alert_enemies_at(
             float(self.player.pos.x), float(self.player.pos.y), loudness=0.3
         )
 
-        rate = stats.fire_rate / 2 if self.speed_buff_timer > 0 else stats.fire_rate
+        rate = stats.fire_rate * self._fire_rate_mul
+        if self.speed_buff_timer > 0:
+            rate /= 2
         self.shot_timer = rate
 
     def _start_reload(self) -> None:
@@ -1219,9 +1340,92 @@ class Game:
         self.play_spatial("Shoot1", float(pos.x), float(pos.y), 0.8)
         self._alert_enemies_at(float(pos.x), float(pos.y), loudness=1.5)
 
+    def _detonate_exploder(self, enemy: ExploderEnemy) -> None:
+        """Apply area damage from an exploder enemy's self-destruct."""
+        pos = glm.vec2(enemy.pos)
+        damage = int(EXPLODER_DAMAGE * self._damage_mul) if self._damage_mul != 1.0 else EXPLODER_DAMAGE
+        radius = EXPLODER_RADIUS
+
+        # Damage other enemies in radius (with distance falloff + knockback)
+        for other in self.enemies:
+            if other is enemy or not other.alive:
+                continue
+            dist = glm.distance(pos, other.pos)
+            if dist < radius:
+                falloff = 1.0 - dist / radius
+                dmg = int(damage * falloff)
+                knockback = None
+                if dist > 1:
+                    knockback = glm.normalize(other.pos - pos) * 50
+                other.take_damage(dmg, knockback, source_pos=pos)
+                if dmg > 0:
+                    offset = glm.vec2(random.uniform(-4, 4), random.uniform(-6, -2))
+                    self._damage_numbers.append(
+                        _DamageNumber(other.pos + offset, dmg, color=(255, 180, 40))
+                    )
+                # Chain reaction: if killing another exploder, set its flag
+                if isinstance(other, ExploderEnemy) and other.health <= 0:
+                    other._exploded = True
+
+        # Damage player (full rate, no 0.5 reduction)
+        player_dist = glm.distance(pos, self.player.pos)
+        if player_dist < radius:
+            falloff = 1.0 - player_dist / radius
+            dmg = int(EXPLODER_DAMAGE * falloff)
+            self._apply_damage(dmg)
+            if self.player.health > 0:
+                self.player.emitter.burst()
+            else:
+                self.player.emitter.burst(50)
+                self.time_scale = 0.05
+
+        # Damage crates
+        for crate in self.crates:
+            if not crate.alive:
+                continue
+            dist = glm.distance(pos, crate.pos)
+            if dist < radius:
+                falloff = 1.0 - dist / radius
+                dmg = int(damage * falloff)
+                if dmg > 0:
+                    crate.take_damage(dmg)
+                    if not crate.alive:
+                        self._destroy_crate(crate)
+
+        # Explosion particles
+        outer = ParticleEmitter(
+            pos=glm.vec2(pos),
+            vel=None,
+            spawn_rate=0,
+            shape=ParticleEmitter.Circle(8),
+            particle_class=FadeOutParticle,
+            particle_kwargs={"color": (255, 120, 30)},
+        )
+        outer.burst(25)
+        inner = ParticleEmitter(
+            pos=glm.vec2(pos),
+            vel=None,
+            spawn_rate=0,
+            shape=ParticleEmitter.Circle(3),
+            particle_class=FadeOutParticle,
+            particle_kwargs={"color": (200, 40, 20)},
+        )
+        inner.burst(12)
+        outer.particles.extend(inner.particles)
+        self._impact_emitters.append(outer)
+
+        # Screen shake
+        self.camera.shake = glm.vec2(
+            random.uniform(-3.0, 3.0), random.uniform(-3.0, 3.0)
+        )
+
+        # Sound + alert
+        self.play_spatial("Shoot1", float(pos.x), float(pos.y), 0.8)
+        self._alert_enemies_at(float(pos.x), float(pos.y), loudness=1.5)
+
     def _detonate_grenade(self, grenade: Grenade) -> None:
         """Apply area damage from grenade explosion."""
-        self._detonate_explosion(grenade.pos, GRENADE_DAMAGE, GRENADE_RADIUS)
+        self._detonate_explosion(grenade.pos, int(GRENADE_DAMAGE * self._damage_mul), GRENADE_RADIUS)
 
         # Explosion particles — replace the trail emitter with a big burst
         grenade.emitter = ParticleEmitter(
@@ -1263,7 +1467,7 @@ class Game:
             # Check wall collision (reuse grenade bounce detection — detonate instead)
             if self.game_map.collide_grenade(rocket, old_pos):
                 rocket.detonated = True
-                self._detonate_explosion(rocket.pos, ROCKET_DAMAGE, ROCKET_RADIUS)
+                self._detonate_explosion(rocket.pos, int(ROCKET_DAMAGE * self._damage_mul), ROCKET_RADIUS)
                 rocket.emitter = ParticleEmitter(
                     pos=glm.vec2(rocket.pos),
                     vel=None,
@@ -1281,7 +1485,7 @@ class Game:
                     continue
                 if glm.distance(rocket.pos, enemy.pos) < 6:
                     rocket.detonated = True
-                    self._detonate_explosion(rocket.pos, ROCKET_DAMAGE, ROCKET_RADIUS)
+                    self._detonate_explosion(rocket.pos, int(ROCKET_DAMAGE * self._damage_mul), ROCKET_RADIUS)
                     rocket.emitter = ParticleEmitter(
                         pos=glm.vec2(rocket.pos),
                         vel=None,
@@ -1555,6 +1759,8 @@ class Game:
 
         if self._dead:
             self._draw_death_screen()
+        elif self._upgrade_screen:
+            self._draw_upgrade_screen()
         elif self._paused:
             self._draw_pause_screen()
 
@@ -1617,6 +1823,92 @@ class Game:
         self.window.blit(
             self._pause_quit, (cx - self._pause_quit.get_width() // 2, cy + 46)
         )
+
+    def _get_upgrade_box_rects(self) -> list[pygame.Rect]:
+        """Compute 3 upgrade box rects centered on the window."""
+        box_w, box_h = 280, 150
+        gap = 30
+        total_w = box_w * 3 + gap * 2
+        wx, wy = int(self.window_size.x), int(self.window_size.y)
+        start_x = (wx - total_w) // 2
+        start_y = wy // 2 - box_h // 2 + 20
+        rects: list[pygame.Rect] = []
+        for i in range(min(3, len(self._upgrade_choices))):
+            bx = start_x + i * (box_w + gap)
+            rects.append(pygame.Rect(bx, start_y, box_w, box_h))
+        return rects
+
+    def _handle_upgrade_click(self, mx: int, my: int) -> None:
+        """Handle a click on the upgrade selection screen."""
+        rects = self._get_upgrade_box_rects()
+        for i, rect in enumerate(rects):
+            if rect.collidepoint(mx, my):
+                _, _, apply_fn = self._upgrade_choices[i]
+                apply_fn()
+                self._upgrade_screen = False
+                self._upgrade_choices = []
+                self.level.advance_floor()
+                self.setup_floor()
+                self.sound_player.play("Portal1")
+                pygame.mouse.set_visible(False)
+                return
+
+    def _draw_upgrade_screen(self) -> None:
+        """Draw the upgrade selection overlay."""
+        pygame.mouse.set_visible(True)
+        # Dark overlay
+        overlay = pygame.Surface(self.window_size, pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        self.window.blit(overlay, (0, 0))
+
+        wx, wy = int(self.window_size.x), int(self.window_size.y)
+        cx = wx // 2
+
+        # Title
+        title = self._upgrade_title_font.render(
+            "CHOOSE AN UPGRADE", False, (255, 220, 80)
+        )
+        self.window.blit(title, (cx - title.get_width() // 2, wy // 2 - 130))
+
+        # Subtitle
+        subtitle = self._ui_font.render(
+            f"Floor {self.level.floor} Complete", False, (180, 180, 180)
+        )
+        self.window.blit(subtitle, (cx - subtitle.get_width() // 2, wy // 2 - 95))
+
+        # Boxes
+        rects = self._get_upgrade_box_rects()
+        mx, my = pygame.mouse.get_pos()
+        for i, rect in enumerate(rects):
+            name, desc, _ = self._upgrade_choices[i]
+            hovered = rect.collidepoint(mx, my)
+
+            # Background
+            bg_color = (40, 40, 50) if not hovered else (50, 50, 65)
+            pygame.draw.rect(self.window, bg_color, rect)
+
+            # Border
+            border_color = (200, 180, 60) if hovered else (80, 80, 100)
+            pygame.draw.rect(self.window, border_color, rect, 2)
+
+            # Name
+            name_surf = self._upgrade_font.render(name, False, (255, 255, 255))
+            self.window.blit(
+                name_surf,
+                (rect.x + rect.width // 2 - name_surf.get_width() // 2, rect.y + 20),
+            )
+
+            # Description (multiline)
+            lines = desc.split("\n")
+            for li, line in enumerate(lines):
+                line_surf = self._upgrade_font.render(line, False, (180, 180, 180))
+                self.window.blit(
+                    line_surf,
+                    (
+                        rect.x + rect.width // 2 - line_surf.get_width() // 2,
+                        rect.y + 55 + li * 22,
+                    ),
+                )
 
     def _draw_pickup_tooltip(
         self, surface: pygame.Surface, pickup: Pickup, cam_offset: glm.vec2
